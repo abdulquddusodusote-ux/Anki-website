@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlashCards Pro</title>
+  <!-- Font Awesome for icons (optional but looks great) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- TOP NAVIGATION -->
+    <nav class="top-nav">
+      <h1><i class="fas fa-brain"></i> FlashCards</h1>
+      <div class="nav-tabs">
+        <button class="nav-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</button>
+        <button class="nav-btn" data-tab="decks"><i class="fas fa-layer-group"></i> Decks</button>
+        <button class="nav-btn" data-tab="review"><i class="fas fa-play"></i> Review</button>
+        <button class="nav-btn" data-tab="stats"><i class="fas fa-chart-bar"></i> Stats</button>
+        <button class="nav-btn" data-tab="import"><i class="fas fa-file-import"></i> Import/Export</button>
+      </div>
+      <button id="themeToggle" class="icon-btn"><i class="fas fa-moon"></i></button>
+    </nav>
+
+    <!-- DASHBOARD TAB -->
+    <section id="dashboard" class="tab-content active">
+      <div class="dashboard-grid">
+        <div class="stat-card primary"><div class="stat-icon"><i class="fas fa-cards"></i></div><div><span class="stat-label">Total Cards</span><span class="stat-value" id="totalCards">0</span></div></div>
+        <div class="stat-card danger"><div class="stat-icon"><i class="fas fa-clock"></i></div><div><span class="stat-label">Due Today</span><span class="stat-value" id="dueToday">0</span></div></div>
+        <div class="stat-card warning"><div class="stat-icon"><i class="fas fa-seedling"></i></div><div><span class="stat-label">New (Never studied)</span><span class="stat-value" id="newCards">0</span></div></div>
+        <div class="stat-card success"><div class="stat-icon"><i class="fas fa-fire"></i></div><div><span class="stat-label">Study Streak</span><span class="stat-value" id="streak">0 days</span></div></div>
+        <div class="stat-card info" style="grid-column: span 2;">
+          <div class="stat-icon"><i class="fas fa-bullseye"></i></div>
+          <div style="flex:1;">
+            <span class="stat-label">Daily Goal Progress</span>
+            <div class="goal-progress">
+              <div class="progress-ring" id="goalRing"><span id="goalText">0 / 0</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="stat-card" style="grid-column: span 2; background: var(--card-bg);">
+          <span class="stat-label">Retention Rate (7 days)</span>
+          <span class="stat-value" id="retentionRate">0%</span>
+          <div style="width:100%; height:6px; background:#eee; border-radius:4px; margin-top:8px;">
+            <div id="retentionBar" style="height:100%; width:0%; background:#4caf50; border-radius:4px;"></div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 20px; background: var(--card-bg); padding: 1rem; border-radius: 12px;">
+        <h3><i class="fas fa-layer-group"></i> Deck Distribution</h3>
+        <div id="deckDistList" style="display:flex; flex-wrap:wrap; gap: 8px; margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <!-- DECKS TAB -->
+    <section id="decks" class="tab-content">
+      <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap;">
+        <input id="newDeckName" placeholder="New deck name (e.g. Science::Biology)" style="flex:2; min-width:200px;" />
+        <button onclick="createDeck()" class="btn-primary"><i class="fas fa-plus"></i> Create Deck</button>
+      </div>
+      <div id="deckTree" class="deck-tree"></div>
+      <!-- Card list for selected deck -->
+      <div id="deckCardList" style="margin-top:20px;"></div>
+    </section>
+
+    <!-- REVIEW TAB -->
+    <section id="review" class="tab-content">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:15px;">
+        <button onclick="startReview('all')" class="btn-success"><i class="fas fa-random"></i> All Decks (Mixed)</button>
+        <span style="align-self:center; margin:0 8px; color:var(--text-muted);">or pick a deck:</span>
+        <select id="reviewDeckSelect" onchange="startReview(this.value)" style="padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); color:var(--text);">
+          <option value="all">-- All Decks --</option>
+        </select>
+      </div>
+      <div id="reviewContainer">
+        <div id="cardDisplay" class="card-box">📌 Click a deck above to start reviewing.</div>
+        <div id="reviewButtons" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+          <button onclick="showAnswer()" id="showBtn" class="hidden"><i class="fas fa-eye"></i> Show Answer</button>
+          <button onclick="rateCard(0)" id="againBtn" class="hidden btn-again"><i class="fas fa-times"></i> Again (1m)</button>
+          <button onclick="rateCard(1)" id="hardBtn" class="hidden btn-hard"><i class="fas fa-minus"></i> Hard (5m)</button>
+          <button onclick="rateCard(2)" id="goodBtn" class="hidden btn-good"><i class="fas fa-check"></i> Good (10m)</button>
+          <button onclick="rateCard(3)" id="easyBtn" class="hidden btn-easy"><i class="fas fa-star"></i> Easy (1d)</button>
+        </div>
+        <div id="reviewProgress" style="margin-top:10px; font-size:0.9rem; color:var(--text-muted);"></div>
+      </div>
+    </section>
+
+    <!-- STATS TAB (Detailed) -->
+    <section id="stats" class="tab-content">
+      <div class="stats-full">
+        <div class="stat-block"><h4><i class="fas fa-layer-group"></i> Cards per Deck</h4><div id="statsDeckBreakdown"></div></div>
+        <div class="stat-block"><h4><i class="fas fa-chart-pie"></i> Card Maturity</h4><div id="statsMaturity"></div></div>
+        <div class="stat-block"><h4><i class="fas fa-history"></i> Review History</h4><div id="statsHistory">(Tracked locally)</div></div>
+        <div class="stat-block"><h4><i class="fas fa-clock"></i> Due Distribution (next 7 days)</h4><div id="statsDueDistribution"></div></div>
+      </div>
+    </section>
+
+    <!-- IMPORT / EXPORT TAB -->
+    <section id="import" class="tab-content">
+      <div class="import-export-grid">
+        <div class="card-box" style="background:var(--card-bg);">
+          <h3><i class="fas fa-file-import"></i> Import Cards</h3>
+          <p><small>Format: <code>Question;Answer</code> (semicolon only). One card per line.</small></p>
+          <input type="file" id="fileInput" accept=".csv,.txt" />
+          <button onclick="importFile()" class="btn-primary"><i class="fas fa-upload"></i> Upload & Import</button>
+          <div id="importStatus" style="margin-top:10px;"></div>
+        </div>
+        <div class="card-box" style="background:var(--card-bg);">
+          <h3><i class="fas fa-file-export"></i> Export Cards</h3>
+          <p><small>Downloads all cards as <code>Question;Answer;Deck</code> (semicolon separated).</small></p>
+          <button onclick="exportFile()" class="btn-success"><i class="fas fa-download"></i> Export .txt</button>
+        </div>
+        <div class="card-box" style="background:var(--card-bg); grid-column: span 2;">
+          <h3><i class="fas fa-cog"></i> Daily Goal</h3>
+          <p><small>Set how many cards you want to review each day.</small></p>
+          <input type="number" id="goalInput" value="20" min="1" style="width:100px; display:inline-block;" />
+          <button onclick="setGoal()" class="btn-primary">Set Goal</button>
+          <span id="goalDisplay" style="margin-left:15px;"></span>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>
