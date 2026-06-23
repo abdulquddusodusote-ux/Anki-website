@@ -1,126 +1,285 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FlashCards Pro</title>
-  <!-- Font Awesome for icons (optional but looks great) -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
-  <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FlashCoach — Spaced Repetition</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-  <div id="app">
-    <!-- TOP NAVIGATION -->
-    <nav class="top-nav">
-      <h1><i class="fas fa-brain"></i> FlashCards</h1>
-      <div class="nav-tabs">
-        <button class="nav-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</button>
-        <button class="nav-btn" data-tab="decks"><i class="fas fa-layer-group"></i> Decks</button>
-        <button class="nav-btn" data-tab="review"><i class="fas fa-play"></i> Review</button>
-        <button class="nav-btn" data-tab="stats"><i class="fas fa-chart-bar"></i> Stats</button>
-        <button class="nav-btn" data-tab="import"><i class="fas fa-file-import"></i> Import/Export</button>
-      </div>
-      <button id="themeToggle" class="icon-btn"><i class="fas fa-moon"></i></button>
+
+<div id="app">
+    <!-- TOP BAR -->
+    <header id="topbar">
+        <button id="menuBtn" aria-label="Menu"><i class="fas fa-bars"></i></button>
+        <h1>FlashCoach</h1>
+        <div class="topbar-right">
+            <span id="goalPill">0/20</span>
+            <button id="themeBtn" aria-label="Toggle theme"><i class="fas fa-moon"></i></button>
+        </div>
+    </header>
+
+    <!-- SIDEBAR -->
+    <nav id="sidebar" class="hidden">
+        <div class="sidebar-header">
+            <h2>FlashCoach</h2>
+            <button id="closeMenuBtn"><i class="fas fa-times"></i></button>
+        </div>
+        <ul>
+            <li><button class="nav-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</button></li>
+            <li><button class="nav-btn" data-tab="decks"><i class="fas fa-layer-group"></i> Decks</button></li>
+            <li><button class="nav-btn" data-tab="review"><i class="fas fa-play"></i> Review</button></li>
+            <li><button class="nav-btn" data-tab="stats"><i class="fas fa-chart-bar"></i> Statistics</button></li>
+            <li><button class="nav-btn" data-tab="help"><i class="fas fa-question-circle"></i> Help</button></li>
+        </ul>
     </nav>
 
-    <!-- DASHBOARD TAB -->
-    <section id="dashboard" class="tab-content active">
-      <div class="dashboard-grid">
-        <div class="stat-card primary"><div class="stat-icon"><i class="fas fa-cards"></i></div><div><span class="stat-label">Total Cards</span><span class="stat-value" id="totalCards">0</span></div></div>
-        <div class="stat-card danger"><div class="stat-icon"><i class="fas fa-clock"></i></div><div><span class="stat-label">Due Today</span><span class="stat-value" id="dueToday">0</span></div></div>
-        <div class="stat-card warning"><div class="stat-icon"><i class="fas fa-seedling"></i></div><div><span class="stat-label">New (Never studied)</span><span class="stat-value" id="newCards">0</span></div></div>
-        <div class="stat-card success"><div class="stat-icon"><i class="fas fa-fire"></i></div><div><span class="stat-label">Study Streak</span><span class="stat-value" id="streak">0 days</span></div></div>
-        <div class="stat-card info" style="grid-column: span 2;">
-          <div class="stat-icon"><i class="fas fa-bullseye"></i></div>
-          <div style="flex:1;">
-            <span class="stat-label">Daily Goal Progress</span>
-            <div class="goal-progress">
-              <div class="progress-ring" id="goalRing"><span id="goalText">0 / 0</span></div>
+    <!-- OVERLAY -->
+    <div id="overlay" class="hidden"></div>
+
+    <!-- MAIN -->
+    <main id="main">
+
+        <!-- DASHBOARD -->
+        <section id="dashboard" class="tab active">
+            <div class="stat-strip" id="statStrip"></div>
+            <div class="dashboard-grid">
+                <!-- Study Time -->
+                <div class="card-panel">
+                    <h3><i class="fas fa-clock"></i> Today's Study Time</h3>
+                    <div id="studyTimeDisplay" style="font-size:1.8rem;font-weight:700;color:var(--primary);">0 min</div>
+                    <div style="font-size:0.8rem;color:var(--text-muted);margin-top:4px;">This week: <span id="weekStudyTime">0 min</span> · This month: <span id="monthStudyTime">0 min</span></div>
+                </div>
+
+                <!-- Streaks -->
+                <div class="card-panel">
+                    <h3><i class="fas fa-fire"></i> Streaks</h3>
+                    <div style="display:flex; gap:16px;">
+                        <div>
+                            <div style="font-size:0.7rem;color:var(--text-muted);">Daily</div>
+                            <div style="font-size:1.6rem;font-weight:700;color:var(--primary);" id="dailyStreakDisplay">0 days</div>
+                        </div>
+                        <div>
+                            <div style="font-size:0.7rem;color:var(--text-muted);">Goal (20/day)</div>
+                            <div style="font-size:1.6rem;font-weight:700;color:var(--accent);" id="goalStreakDisplay">0 days</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Weakest Topic -->
+                <div class="card-panel">
+                    <h3><i class="fas fa-exclamation-triangle"></i> Weakest Topic</h3>
+                    <div id="weakTopicDisplay">—</div>
+                </div>
+
+                <!-- Smart Goal -->
+                <div class="card-panel">
+                    <h3><i class="fas fa-bullseye"></i> Smart Goal</h3>
+                    <div id="smartGoalDisplay"></div>
+                </div>
             </div>
-          </div>
-        </div>
-        <div class="stat-card" style="grid-column: span 2; background: var(--card-bg);">
-          <span class="stat-label">Retention Rate (7 days)</span>
-          <span class="stat-value" id="retentionRate">0%</span>
-          <div style="width:100%; height:6px; background:#eee; border-radius:4px; margin-top:8px;">
-            <div id="retentionBar" style="height:100%; width:0%; background:#4caf50; border-radius:4px;"></div>
-          </div>
-        </div>
-      </div>
-      <div style="margin-top: 20px; background: var(--card-bg); padding: 1rem; border-radius: 12px;">
-        <h3><i class="fas fa-layer-group"></i> Deck Distribution</h3>
-        <div id="deckDistList" style="display:flex; flex-wrap:wrap; gap: 8px; margin-top:8px;"></div>
-      </div>
-    </section>
+            <button id="quickReviewBtn" class="btn-primary btn-large">📚 Start Review</button>
+        </section>
 
-    <!-- DECKS TAB -->
-    <section id="decks" class="tab-content">
-      <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap;">
-        <input id="newDeckName" placeholder="New deck name (e.g. Science::Biology)" style="flex:2; min-width:200px;" />
-        <button onclick="createDeck()" class="btn-primary"><i class="fas fa-plus"></i> Create Deck</button>
-      </div>
-      <div id="deckTree" class="deck-tree"></div>
-      <!-- Card list for selected deck -->
-      <div id="deckCardList" style="margin-top:20px;"></div>
-    </section>
+        <!-- DECKS -->
+        <section id="decks" class="tab">
+            <div class="deck-controls">
+                <input id="newDeckInput" placeholder="New deck (e.g. Science::Biology)">
+                <button id="createDeckBtn" class="btn-primary"><i class="fas fa-plus"></i> Create</button>
+            </div>
+            <div id="deckTreeContainer" class="deck-tree"></div>
 
-    <!-- REVIEW TAB -->
-    <section id="review" class="tab-content">
-      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:15px;">
-        <button onclick="startReview('all')" class="btn-success"><i class="fas fa-random"></i> All Decks (Mixed)</button>
-        <span style="align-self:center; margin:0 8px; color:var(--text-muted);">or pick a deck:</span>
-        <select id="reviewDeckSelect" onchange="startReview(this.value)" style="padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--input-bg); color:var(--text);">
-          <option value="all">-- All Decks --</option>
-        </select>
-      </div>
-      <div id="reviewContainer">
-        <div id="cardDisplay" class="card-box">📌 Click a deck above to start reviewing.</div>
-        <div id="reviewButtons" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
-          <button onclick="showAnswer()" id="showBtn" class="hidden"><i class="fas fa-eye"></i> Show Answer</button>
-          <button onclick="rateCard(0)" id="againBtn" class="hidden btn-again"><i class="fas fa-times"></i> Again (1m)</button>
-          <button onclick="rateCard(1)" id="hardBtn" class="hidden btn-hard"><i class="fas fa-minus"></i> Hard (5m)</button>
-          <button onclick="rateCard(2)" id="goodBtn" class="hidden btn-good"><i class="fas fa-check"></i> Good (10m)</button>
-          <button onclick="rateCard(3)" id="easyBtn" class="hidden btn-easy"><i class="fas fa-star"></i> Easy (1d)</button>
-        </div>
-        <div id="reviewProgress" style="margin-top:10px; font-size:0.9rem; color:var(--text-muted);"></div>
-      </div>
-    </section>
+            <!-- Selected Deck Info & Collapsible Card View -->
+            <div id="selectedDeckInfo" style="display:none; margin-top:12px; padding:12px; background:var(--surface); border-radius:var(--radius); border:1px solid var(--border);">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <span id="selectedDeckName"></span>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <button id="toggleCardsBtn" class="btn-primary" style="font-size:0.8rem;"><i class="fas fa-list"></i> View Cards</button>
+                        <button id="importToDeckBtn" class="btn-primary" style="font-size:0.8rem;"><i class="fas fa-upload"></i> Import</button>
+                        <button id="addCardToDeckBtn" class="btn-primary" style="font-size:0.8rem;"><i class="fas fa-plus"></i> Add Card</button>
+                    </div>
+                </div>
+                <!-- Collapsible Card List -->
+                <div id="deckCardListContainer" style="display:none; margin-top:12px;">
+                    <div id="deckCardList" class="card-list"></div>
+                    <button id="hideCardsBtn" class="btn-secondary" style="margin-top:8px; font-size:0.8rem;"><i class="fas fa-chevron-up"></i> Hide Cards</button>
+                </div>
+            </div>
 
-    <!-- STATS TAB (Detailed) -->
-    <section id="stats" class="tab-content">
-      <div class="stats-full">
-        <div class="stat-block"><h4><i class="fas fa-layer-group"></i> Cards per Deck</h4><div id="statsDeckBreakdown"></div></div>
-        <div class="stat-block"><h4><i class="fas fa-chart-pie"></i> Card Maturity</h4><div id="statsMaturity"></div></div>
-        <div class="stat-block"><h4><i class="fas fa-history"></i> Review History</h4><div id="statsHistory">(Tracked locally)</div></div>
-        <div class="stat-block"><h4><i class="fas fa-clock"></i> Due Distribution (next 7 days)</h4><div id="statsDueDistribution"></div></div>
-      </div>
-    </section>
+            <div class="search-area">
+                <input id="searchInput" placeholder="🔍 Search cards, decks, tags...">
+            </div>
+            <input type="file" id="importFileInput" accept=".csv,.txt" style="display:none;">
+        </section>
 
-    <!-- IMPORT / EXPORT TAB -->
-    <section id="import" class="tab-content">
-      <div class="import-export-grid">
-        <div class="card-box" style="background:var(--card-bg);">
-          <h3><i class="fas fa-file-import"></i> Import Cards</h3>
-          <p><small>Format: <code>Question;Answer</code> (semicolon only). One card per line.</small></p>
-          <input type="file" id="fileInput" accept=".csv,.txt" />
-          <button onclick="importFile()" class="btn-primary"><i class="fas fa-upload"></i> Upload & Import</button>
-          <div id="importStatus" style="margin-top:10px;"></div>
+        <!-- REVIEW -->
+        <section id="review" class="tab">
+            <div class="review-controls">
+                <select id="reviewDeckSelect"></select>
+                <button id="startReviewBtn" class="btn-primary"><i class="fas fa-play"></i> Start</button>
+                <button id="reviewAllBtn" class="btn-success"><i class="fas fa-random"></i> All</button>
+            </div>
+            <div class="review-container">
+                <div id="cardDisplay" class="card-box">
+                    <div style="display:flex; justify-content:space-between; width:100%; margin-bottom:12px;">
+                        <span id="reviewProgress" style="font-size:0.8rem;color:var(--text-muted);">0 / 0</span>
+                        <span id="reviewTimer" style="font-size:0.8rem;color:var(--text-muted);">⏱️ 00:00</span>
+                    </div>
+                    <div id="reviewQuestion" style="font-size:1.2rem;font-weight:500;margin-bottom:16px;">Select a deck and tap "Start".</div>
+                    <div id="reviewAnswer" style="font-size:1.1rem;color:var(--primary);font-weight:500;display:none;"></div>
+                </div>
+                <div id="reviewButtons" class="review-buttons">
+                    <button id="showBtn" class="btn-show"><i class="fas fa-eye"></i> Show Answer</button>
+                    <button id="againBtn" class="btn-again hidden">Again (1m)</button>
+                    <button id="hardBtn" class="btn-hard hidden">Hard (5m)</button>
+                    <button id="goodBtn" class="btn-good hidden">Good (10m)</button>
+                    <button id="easyBtn" class="btn-easy hidden">Easy (4d)</button>
+                </div>
+                <div id="reviewExtra" class="review-extra hidden"></div>
+            </div>
+        </section>
+
+        <!-- STATISTICS -->
+        <section id="stats" class="tab">
+            <div class="stats-controls">
+                <label for="statsDeckSelect">Deck:</label>
+                <select id="statsDeckSelect"></select>
+                <button id="exportBtn" class="btn-success" style="margin-left:auto;"><i class="fas fa-download"></i> Export</button>
+            </div>
+            <div class="stats-grid">
+                <div class="card-panel"><h4>📊 Retention</h4><div id="statsRetention">Select a deck.</div></div>
+                <div class="card-panel"><h4>📈 Readiness</h4><div id="statsReadiness">Select a deck.</div></div>
+                <div class="card-panel"><h4>📋 Maturity</h4><div id="statsMaturity">Select a deck.</div></div>
+                <div class="card-panel"><h4>📅 Due Distribution</h4><div id="statsDueDist">Select a deck.</div></div>
+                <div class="card-panel" style="grid-column:span 2;">
+                    <h3><i class="fas fa-lightbulb"></i> Insights</h3>
+                    <div id="insightsContainer"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- HELP -->
+        <section id="help" class="tab">
+            <div class="card-panel" style="max-width:800px; margin:0 auto;">
+                <h2><i class="fas fa-question-circle" style="color:var(--primary);"></i> Help & User Guide</h2>
+                <hr style="margin:12px 0; border-color:var(--border);">
+
+                <h3>📖 Navigation</h3>
+                <p>Use the <strong>hamburger menu (☰)</strong> in the top-left corner to switch between sections.</p>
+                <ul>
+                    <li><strong>Dashboard</strong> – Overview of your progress, study time, streaks, and daily goals.</li>
+                    <li><strong>Decks</strong> – Create, organize, and manage your decks and subdecks.</li>
+                    <li><strong>Review</strong> – Study your due cards using spaced repetition.</li>
+                    <li><strong>Statistics</strong> – Detailed analytics for each deck.</li>
+                    <li><strong>Help</strong> – This page.</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>📂 Decks & Subdecks</h3>
+                <ul>
+                    <li><strong>Create a deck:</strong> Type a name (e.g., <code>Science::Biology</code>) and click <strong>Create</strong>. The <code>::</code> creates subdecks.</li>
+                    <li><strong>Expand/collapse:</strong> Click the <strong>▶/▼</strong> arrow next to a deck.</li>
+                    <li><strong>Select a deck:</strong> Click the <strong>deck name</strong> – it highlights and shows options below.</li>
+                    <li><strong>View cards:</strong> Select a deck, click <strong>"View Cards"</strong> – the cards appear below. Click <strong>"Hide Cards"</strong> to collapse them.</li>
+                    <li><strong>Import cards:</strong> Select a deck, click <strong>"Import"</strong>, choose your <code>.csv</code> or <code>.txt</code> file (format: <code>Question;Answer</code>).</li>
+                    <li><strong>Add a card:</strong> Select a deck, click <strong>"Add Card"</strong>.</li>
+                    <li><strong>Create a subdeck:</strong> Select a deck, click the <strong>⊕ (Create Subdeck)</strong> button next to the deck name.</li>
+                    <li><strong>Delete a deck:</strong> Click the <strong>🗑️</strong> icon next to the deck.</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>🎮 Review Mode</h3>
+                <ul>
+                    <li><strong>Select a deck</strong> from the dropdown or click <strong>"All Decks"</strong>.</li>
+                    <li>Click <strong>"Start Review"</strong> – the card front appears at the top.</li>
+                    <li>Tap <strong>"Show Answer"</strong> to reveal the back directly below.</li>
+                    <li><strong>Rate your recall:</strong> Choose <strong>Again, Hard, Good, or Easy</strong> at the bottom.</li>
+                    <li><strong>Progress:</strong> A counter shows <code>3 / 10</code> at the top.</li>
+                    <li><strong>Timer:</strong> A live timer tracks how long you spend reviewing each session.</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>📊 Statistics</h3>
+                <ul>
+                    <li><strong>Select a deck</strong> from the dropdown to see its stats.</li>
+                    <li><strong>Retention:</strong> % of "Good" or "Easy" ratings in the last 30 days.</li>
+                    <li><strong>Exam Readiness:</strong> Score out of 100 based on maturity, retention, and coverage.</li>
+                    <li><strong>Maturity:</strong> New / Learning / Review / Suspended card counts.</li>
+                    <li><strong>Due Distribution:</strong> Bar chart showing cards due in the next 7 days.</li>
+                    <li><strong>Export:</strong> Click <strong>"Export"</strong> to download all cards as <code>Question;Answer</code>.</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>📈 Dashboard</h3>
+                <ul>
+                    <li><strong>Stat strip:</strong> Total cards, due today (with estimated time), retention %, streaks, study time.</li>
+                    <li><strong>Study Time:</strong> Tracks time spent reviewing today, this week, and this month.</li>
+                    <li><strong>Streaks:</strong> Two streaks – daily (any review) and goal (meeting your daily goal).</li>
+                    <li><strong>Workload Forecast:</strong> Cards due in the next 7 days.</li>
+                    <li><strong>Weakest Topic:</strong> The deck with the lowest retention.</li>
+                    <li><strong>Smart Goal:</strong> Recommends daily reviews to clear backlog in 7 or 14 days.</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>🎨 Theme & Settings</h3>
+                <ul>
+                    <li><strong>Dark/Light mode:</strong> Toggle with the <strong>🌙/☀</strong> button in the top-right (persists across sessions).</li>
+                    <li><strong>Daily Goal:</strong> Set in the <strong>Statistics</strong> tab (Daily Goal section).</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>⌨️ Keyboard Shortcuts</h3>
+                <ul>
+                    <li><kbd>1</kbd> – Again</li>
+                    <li><kbd>2</kbd> – Hard</li>
+                    <li><kbd>3</kbd> – Good</li>
+                    <li><kbd>4</kbd> – Easy</li>
+                    <li><kbd>Space</kbd> – Show Answer</li>
+                </ul>
+
+                <hr style="margin:16px 0; border-color:var(--border);">
+
+                <h3>❓ Troubleshooting</h3>
+                <ul>
+                    <li><strong>No cards due?</strong> Add more cards or wait for intervals to expire.</li>
+                    <li><strong>Import not working?</strong> Ensure your file is <code>Question;Answer</code> (semicolon only).</li>
+                    <li><strong>Review blank?</strong> Make sure you have due cards and have selected a deck.</li>
+                    <li><strong>Data lost?</strong> All data is stored in your browser's IndexedDB – clear at your own risk.</li>
+                </ul>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- BOTTOM NAV -->
+    <nav id="bottomNav">
+        <button class="nav-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i><span>Home</span></button>
+        <button class="nav-btn" data-tab="decks"><i class="fas fa-layer-group"></i><span>Decks</span></button>
+        <button class="nav-btn" data-tab="review"><i class="fas fa-play"></i><span>Review</span></button>
+        <button class="nav-btn" data-tab="stats"><i class="fas fa-chart-bar"></i><span>Stats</span></button>
+        <button class="nav-btn" data-tab="help"><i class="fas fa-question-circle"></i><span>Help</span></button>
+    </nav>
+</div>
+
+<!-- RESUME MODAL -->
+<div id="resumeModal" class="modal hidden">
+    <div class="modal-content">
+        <h3>Resume Previous Session?</h3>
+        <p id="resumeInfo">Progress: 0 / 0</p>
+        <div class="modal-buttons">
+            <button id="resumeContinueBtn" class="btn-primary">Continue</button>
+            <button id="resumeDiscardBtn" class="btn-danger">Discard</button>
         </div>
-        <div class="card-box" style="background:var(--card-bg);">
-          <h3><i class="fas fa-file-export"></i> Export Cards</h3>
-          <p><small>Downloads all cards as <code>Question;Answer;Deck</code> (semicolon separated).</small></p>
-          <button onclick="exportFile()" class="btn-success"><i class="fas fa-download"></i> Export .txt</button>
-        </div>
-        <div class="card-box" style="background:var(--card-bg); grid-column: span 2;">
-          <h3><i class="fas fa-cog"></i> Daily Goal</h3>
-          <p><small>Set how many cards you want to review each day.</small></p>
-          <input type="number" id="goalInput" value="20" min="1" style="width:100px; display:inline-block;" />
-          <button onclick="setGoal()" class="btn-primary">Set Goal</button>
-          <span id="goalDisplay" style="margin-left:15px;"></span>
-        </div>
-      </div>
-    </section>
-  </div>
-  <script src="script.js"></script>
+    </div>
+</div>
+
+<script src="script.js"></script>
 </body>
 </html>
