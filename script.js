@@ -1,7 +1,35 @@
 // ================================================================
 //  FLASHCOACH — COMPLETE APPLICATION
-//  SRS Compliant — Parts 1-8
-//  Version: Final (with Streaks, Study Time, Collapsible Cards)
+//  Learning Queue: AnkiDroid-accurate dynamic scheduling
+// ================================================================
+
+// ================================================================
+//  HOW THE REVIEW QUEUE WORKS (AnkiDroid-accurate)
+// ================================================================
+//
+//  Anki's queue priority order (per official docs):
+//    1. Intraday learning cards that are now due   (Red, sub-day)
+//    2. Review cards that are due                  (Green)
+//    3. New cards                                  (Blue)
+//
+//  Learning cards are NEVER "completed" in a session — they stay
+//  in a pending pool and are re-inserted into the front of the
+//  queue when their due timestamp is reached.
+//
+//  Learn Ahead Limit (default 20 min in Anki):
+//    When the only remaining cards are learning cards that aren't
+//    due yet, show the soonest one immediately rather than blocking.
+//    This matches the behavior the user described: <1m, <6m, <10m
+//    means AT MOST those times, not exactly those times.
+//    In practice: if nothing else is left, show it now.
+//
+//  Implementation:
+//    - App.learningPool: Set of card IDs currently in learning state
+//      during this session (persists until card graduates or session ends)
+//    - On each renderReviewCard() call, we dynamically build the next
+//      card to show by scanning what's due right now
+//    - No static queue index — always re-evaluate on every render
+//
 // ================================================================
 
 // ================================================================
@@ -9,13 +37,12 @@
 // ================================================================
 
 const DB_NAME = 'FlashCoachDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 class StorageEngine {
     constructor() {
         this.db = null;
         this.ready = false;
-        this.pending = [];
     }
 
     async init() {
@@ -52,7 +79,6 @@ class StorageEngine {
                 resolve(true);
             };
             request.onerror = () => {
-                // Fallback to localStorage
                 this.ready = true;
                 resolve(true);
             };
@@ -101,20 +127,26 @@ class StorageEngine {
     async put(store, data) {
         await this._ensureReady();
         if (this.db) {
-            const tx = this.db.transaction(store, 'readwrite');
-            await tx.objectStore(store).put(data);
-            await tx.done;
+            return new Promise((resolve, reject) => {
+                const tx = this.db.transaction(store, 'readwrite');
+                const req = tx.objectStore(store).put(data);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
         } else {
-            localStorage.setItem(`_${store}_${data.id || data.key}`, JSON.stringify(data));
+            localStorage.setItem(`_${store}_${data.id || data.key || data.name}`, JSON.stringify(data));
         }
     }
 
     async delete(store, id) {
         await this._ensureReady();
         if (this.db) {
-            const tx = this.db.transaction(store, 'readwrite');
-            await tx.objectStore(store).delete(id);
-            await tx.done;
+            return new Promise((resolve, reject) => {
+                const tx = this.db.transaction(store, 'readwrite');
+                const req = tx.objectStore(store).delete(id);
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
         } else {
             localStorage.removeItem(`_${store}_${id}`);
         }
@@ -123,9 +155,12 @@ class StorageEngine {
     async clear(store) {
         await this._ensureReady();
         if (this.db) {
-            const tx = this.db.transaction(store, 'readwrite');
-            await tx.objectStore(store).clear();
-            await tx.done;
+            return new Promise((resolve, reject) => {
+                const tx = this.db.transaction(store, 'readwrite');
+                const req = tx.objectStore(store).clear();
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
         } else {
             const prefix = `_${store}_`;
             for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -159,16 +194,21 @@ const DEFAULT_SETTINGS = {
     theme: 'light',
     streak: 0,
     goalStreak: 0,
+    bestStreak: 0,
     lastStudyDate: null,
     reviewedToday: 0,
-    totalStudyTimeToday: 0, // in seconds
-    learningSteps: [1, 5, 10], // minutes
-    graduatingInterval: 1, // days
-    easyInterval: 4, // days
+    goalMetToday: false,
+    totalStudyTimeToday: 0,
+    totalStudyTimeWeek: 0,
+    totalStudyTimeMonth: 0,
+    learningSteps: [1, 6, 10],      // minutes
+    graduatingInterval: 1,           // days
+    easyInterval: 4,                 // days
     startingEase: 2.5,
     easyBonus: 1.3,
-    lapseInterval: 0.1, // days
+    lapseInterval: 0.1,
     leechThreshold: 8,
+    learnAheadLimit: 20,            // minutes — show learning cards early if nothing else left
 };
 
 // ================================================================
@@ -184,13 +224,32 @@ const App = {
     expandedDecks: {},
     currentDeckId: null,
     isReviewing: false,
-    reviewQueue: [],
-    reviewIndex: 0,
+
+    // ---- Dynamic queue state ----
+    // Instead of a static array + index, we track:
+    //   sessionNewQueue:    ordered list of new card IDs to show (in order)
+    //   sessionReviewQueue: ordered list of review card IDs to show (in order)
+    //   learningPool:       Set of card IDs that were sent to learning THIS session
+    //   shownNewIds:        Set of new card IDs already shown at least once
+    //   shownReviewIds:     Set of review card IDs already shown at least once
+    //   currentCardId:      ID of the card currently on screen
+    sessionNewQueue: [],
+    sessionReviewQueue: [],
+    learningPool: new Set(),
+    shownNewIds: new Set(),
+    shownReviewIds: new Set(),
+    currentCardId: null,
+
     session: null,
     sessionStats: { total: 0, again: 0, hard: 0, good: 0, easy: 0 },
     sessionStartTime: null,
     sessionTimerInterval: null,
     sessionElapsedSeconds: 0,
+    timerPaused: false,
+    isReviewActive: false,
+
+    // Waiting screen polling
+    waitingInterval: null,
 };
 
 // ================================================================
@@ -212,8 +271,7 @@ function nowISO() {
 function daysBetween(d1, d2) {
     const a = new Date(d1);
     const b = new Date(d2);
-    const diff = (a - b) / (1000 * 60 * 60 * 24);
-    return Math.round(diff);
+    return Math.round((a - b) / (1000 * 60 * 60 * 24));
 }
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
@@ -238,6 +296,23 @@ function formatTimeMMSS(seconds) {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
+function getCardState(card) {
+    if (card.suspended) return 'suspended';
+    if (card.buried) return 'buried';
+    if (card.state === 'new') return 'new';
+    if (card.state === 'learning' || card.state === 'relearning') return 'learning';
+    if (card.state === 'review') return 'review';
+    return 'unknown';
+}
+
+function getCardColor(card) {
+    const state = getCardState(card);
+    if (state === 'new') return 'blue';
+    if (state === 'learning') return 'red';
+    if (state === 'review') return 'green';
+    return 'gray';
+}
+
 // ================================================================
 //  SCHEDULER (SM-2)
 // ================================================================
@@ -252,58 +327,61 @@ function scheduleCard(card, rating) {
     if (!state) state = 'new';
 
     const now = new Date();
-    const learningSteps = s.learningSteps || [1, 5, 10];
+    const learningSteps = s.learningSteps || [1, 6, 10]; // minutes
 
-    // --- Learning Phase ---
     if (state === 'new' || state === 'learning' || state === 'relearning') {
         const stepIndex = Math.min(reps, learningSteps.length - 1);
-        const step = learningSteps[stepIndex];
+        const step = learningSteps[stepIndex]; // in minutes
 
-        if (rating === 0) { // Again
+        if (rating === 0) {
+            // Again — go back to first step
             lapses++;
-            if (state === 'relearning') {
-                state = 'learning';
-                reps = 0;
-                interval = learningSteps[0] / 1440;
-            } else {
-                interval = learningSteps[0] / 1440;
-                reps = 0;
-            }
+            interval = learningSteps[0] / (24 * 60); // convert minutes to days
+            reps = 0;
             ease = Math.max(1.3, ease - 0.2);
-        } else if (rating === 1) { // Hard
-            interval = step / 1440;
-            reps++;
-        } else if (rating === 2) { // Good
+            // state stays 'learning' (or 'relearning' if it was)
+            if (state === 'new') state = 'learning';
+        } else if (rating === 1) {
+            // Hard — stay on current step
+            interval = step / (24 * 60);
+            reps = Math.max(1, reps); // don't advance
+            if (state === 'new') state = 'learning';
+        } else if (rating === 2) {
+            // Good — advance to next step or graduate
             if (reps < learningSteps.length - 1) {
-                interval = step / 1440;
                 reps++;
+                const nextStep = learningSteps[reps];
+                interval = nextStep / (24 * 60);
+                if (state === 'new') state = 'learning';
             } else {
+                // Graduate to review
                 state = 'review';
                 interval = s.graduatingInterval || 1;
                 reps = learningSteps.length;
             }
-        } else if (rating === 3) { // Easy
+        } else if (rating === 3) {
+            // Easy — graduate immediately
             state = 'review';
             interval = s.easyInterval || 4;
             reps = learningSteps.length;
             ease = Math.min(ease + 0.15, 10);
         }
 
-        if (!interval || interval < 1/1440) interval = 1/1440;
+        if (!interval || interval < 1 / (24 * 60)) interval = 1 / (24 * 60);
         const due = new Date(now.getTime() + interval * 24 * 60 * 60 * 1000);
 
         return { state, interval, ease, reps, lapses, due: due.toISOString() };
     }
 
-    // --- Review Phase ---
     if (state === 'review') {
         let newInterval = interval;
         let newEase = ease;
         let newLapses = lapses;
 
         if (rating === 0) {
+            // Again — card lapses back to relearning
             newLapses++;
-            newInterval = s.lapseInterval || 0.1;
+            newInterval = 10 / (24 * 60); // 10 minutes
             state = 'relearning';
             reps = 0;
             newEase = Math.max(1.3, ease - 0.2);
@@ -336,9 +414,8 @@ function scheduleCard(card, rating) {
         };
     }
 
-    // Fallback
     return {
-        state,
+        state: state || 'new',
         interval: interval || 1,
         ease: ease || 2.5,
         reps: reps || 0,
@@ -399,12 +476,58 @@ function getCard(id) {
     return App.cards.find(c => c.id === id);
 }
 
-function getDueCards() {
+function getDueCards(deckId = null) {
     const now = new Date();
-    return App.cards.filter(c => {
+    let result = App.cards.filter(c => {
         if (c.suspended || c.buried) return false;
         return new Date(c.due) <= now;
     });
+    if (deckId) {
+        const descendantIds = getDescendantIds(deckId);
+        result = result.filter(c => descendantIds.includes(c.deckId));
+    }
+    return result;
+}
+
+function getNewCards(deckId = null) {
+    let result = App.cards.filter(c => c.state === 'new' && !c.suspended && !c.buried);
+    if (deckId) {
+        const descendantIds = getDescendantIds(deckId);
+        result = result.filter(c => descendantIds.includes(c.deckId));
+    }
+    return result;
+}
+
+function getLearningCards(deckId = null) {
+    let result = App.cards.filter(c => (c.state === 'learning' || c.state === 'relearning') && !c.suspended && !c.buried);
+    if (deckId) {
+        const descendantIds = getDescendantIds(deckId);
+        result = result.filter(c => descendantIds.includes(c.deckId));
+    }
+    return result;
+}
+
+function getReviewCards(deckId = null) {
+    let result = App.cards.filter(c => c.state === 'review' && !c.suspended && !c.buried);
+    if (deckId) {
+        const descendantIds = getDescendantIds(deckId);
+        result = result.filter(c => descendantIds.includes(c.deckId));
+    }
+    return result;
+}
+
+function getCardCounts(deckId) {
+    const descendantIds = getDescendantIds(deckId);
+    const deckCards = App.cards.filter(c => descendantIds.includes(c.deckId));
+    const now = new Date();
+    return {
+        total: deckCards.length,
+        blue: deckCards.filter(c => c.state === 'new' && !c.suspended && !c.buried).length,
+        red: deckCards.filter(c => (c.state === 'learning' || c.state === 'relearning') && !c.suspended && !c.buried).length,
+        green: deckCards.filter(c => c.state === 'review' && !c.suspended && !c.buried && new Date(c.due) <= now).length,
+        due: deckCards.filter(c => !c.suspended && !c.buried && new Date(c.due) <= now).length,
+        suspended: deckCards.filter(c => c.suspended).length,
+    };
 }
 
 // ================================================================
@@ -413,7 +536,6 @@ function getDueCards() {
 
 async function createDeck(name, parentId = null) {
     let deckName = name.trim();
-    let currentParentId = parentId;
 
     if (deckName.includes('::')) {
         const parts = deckName.split('::').map(p => p.trim()).filter(p => p);
@@ -483,6 +605,34 @@ async function createDeck(name, parentId = null) {
     return deck;
 }
 
+async function renameDeck(deckId, newName) {
+    const deck = App.decks.find(d => d.id === deckId);
+    if (!deck) return null;
+    const oldName = deck.name;
+    deck.name = newName.trim();
+    deck.modifiedAt = nowISO();
+    await App.storage.put('decks', deck);
+    const deckNames = await App.storage.getAll('deckNames');
+    const toRemove = deckNames.filter(d => d.name === oldName);
+    for (const d of toRemove) {
+        await App.storage.delete('deckNames', d.name);
+    }
+    await App.storage.put('deckNames', { name: deck.name });
+    const children = App.decks.filter(d => d.name.startsWith(oldName + '::'));
+    for (const child of children) {
+        child.name = child.name.replace(oldName, deck.name);
+        child.modifiedAt = nowISO();
+        await App.storage.put('decks', child);
+        const names = await App.storage.getAll('deckNames');
+        const toRemoveChild = names.filter(d => d.name === child.name);
+        for (const d of toRemoveChild) {
+            await App.storage.delete('deckNames', d.name);
+        }
+        await App.storage.put('deckNames', { name: child.name });
+    }
+    return deck;
+}
+
 async function createSubdeck(parentId) {
     const parent = App.decks.find(d => d.id === parentId);
     if (!parent) {
@@ -542,20 +692,6 @@ function getDescendantIds(deckId) {
     return result;
 }
 
-function getDeckCounts(deckId) {
-    const descendantIds = getDescendantIds(deckId);
-    const deckCards = App.cards.filter(c => descendantIds.includes(c.deckId));
-    const now = new Date();
-    return {
-        total: deckCards.length,
-        due: deckCards.filter(c => !c.suspended && !c.buried && new Date(c.due) <= now).length,
-        new: deckCards.filter(c => c.state === 'new' && !c.suspended && !c.buried).length,
-        learning: deckCards.filter(c => c.state === 'learning' && !c.suspended && !c.buried).length,
-        review: deckCards.filter(c => c.state === 'review' && !c.suspended && !c.buried).length,
-        suspended: deckCards.filter(c => c.suspended).length,
-    };
-}
-
 // ================================================================
 //  STATISTICS
 // ================================================================
@@ -572,20 +708,6 @@ function getRetention(deckId = null, days = 30) {
     if (filtered.length === 0) return 0;
     const correct = filtered.filter(h => h.ratingValue >= 2).length;
     return Math.round((correct / filtered.length) * 100);
-}
-
-function getLapseRate(deckId = null, days = 30) {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
-    let filtered = App.history.filter(h => new Date(h.timestamp) >= cutoff);
-    if (deckId) {
-        const descendantIds = getDescendantIds(deckId);
-        const cardIds = App.cards.filter(c => descendantIds.includes(c.deckId)).map(c => c.id);
-        filtered = filtered.filter(h => cardIds.includes(h.cardId));
-    }
-    if (filtered.length === 0) return 0;
-    const lapses = filtered.filter(h => h.ratingValue === 0).length;
-    return Math.round((lapses / filtered.length) * 100);
 }
 
 function getExamReadiness(deckId) {
@@ -608,7 +730,7 @@ function getInsights(deckId = null) {
     const retention = getRetention(deckId, 30);
     const lapseRate = getLapseRate(deckId, 30);
     if (retention < 70) {
-        insights.push("📉 Your retention is below 70%. Consider reviewing more frequently or using mnemonic techniques.");
+        insights.push("📉 Your retention is below 70%. Consider reviewing more frequently.");
     } else if (retention > 90) {
         insights.push("📈 Excellent retention! Your study method is working well.");
     }
@@ -621,26 +743,33 @@ function getInsights(deckId = null) {
     return insights;
 }
 
+function getLapseRate(deckId = null, days = 30) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    let filtered = App.history.filter(h => new Date(h.timestamp) >= cutoff);
+    if (deckId) {
+        const descendantIds = getDescendantIds(deckId);
+        const cardIds = App.cards.filter(c => descendantIds.includes(c.deckId)).map(c => c.id);
+        filtered = filtered.filter(h => cardIds.includes(h.cardId));
+    }
+    if (filtered.length === 0) return 0;
+    const lapses = filtered.filter(h => h.ratingValue === 0).length;
+    return Math.round((lapses / filtered.length) * 100);
+}
+
 // ================================================================
 //  SESSION MANAGER
 // ================================================================
 
-async function createSession(deckId, queue) {
-    const session = {
-        id: generateId(),
-        deckId: deckId || 'all',
-        createdAt: nowISO(),
-        startedAt: nowISO(),
-        queue: queue.map(c => c.id),
-        completedIds: [],
-        currentIndex: 0,
-        totalCards: queue.length,
-        lastActivity: nowISO(),
-        finished: false,
-    };
-    await App.storage.put('sessions', session);
-    App.session = session;
-    return session;
+async function saveSessionState() {
+    if (!App.session) return;
+    App.session.sessionNewQueue = App.sessionNewQueue;
+    App.session.sessionReviewQueue = App.sessionReviewQueue;
+    App.session.learningPool = Array.from(App.learningPool);
+    App.session.shownNewIds = Array.from(App.shownNewIds);
+    App.session.shownReviewIds = Array.from(App.shownReviewIds);
+    App.session.lastActivity = nowISO();
+    await App.storage.put('sessions', App.session);
 }
 
 async function loadSession() {
@@ -653,17 +782,11 @@ async function loadSession() {
     return null;
 }
 
-async function updateSession(session) {
-    session.lastActivity = nowISO();
-    await App.storage.put('sessions', session);
-    App.session = session;
-}
-
-async function completeSession(session) {
-    session.finished = true;
-    session.lastActivity = nowISO();
-    await App.storage.put('sessions', session);
-    if (App.session && App.session.id === session.id) {
+async function completeSession() {
+    if (App.session) {
+        App.session.finished = true;
+        App.session.lastActivity = nowISO();
+        await App.storage.put('sessions', App.session);
         App.session = null;
     }
 }
@@ -673,6 +796,613 @@ async function discardSession() {
         await App.storage.delete('sessions', App.session.id);
         App.session = null;
     }
+}
+
+// ================================================================
+//  THE DYNAMIC QUEUE — HEART OF THE FIX
+// ================================================================
+//
+//  pickNextCard() is called every time we need to decide what card
+//  to show next. It follows Anki's exact priority order:
+//
+//  Priority 1: Learning/relearning cards whose due time has passed
+//              (sorted by due time, soonest first)
+//  Priority 2: Review cards not yet shown this session
+//  Priority 3: New cards not yet shown this session
+//  Priority 4: Learning cards not yet due — BUT if they are the
+//              ONLY remaining cards, show the soonest one anyway
+//              (this is the "Learn Ahead" behaviour)
+//
+//  Returns: a card object, or null if truly nothing left.
+//
+// ================================================================
+
+function pickNextCard() {
+    const now = new Date();
+    const deckId = App.currentDeckId;
+    if (!deckId) return null;
+
+    // ---- Priority 1: Learning cards that are now due ----
+    const learningDueNow = getLearningCardsInSession()
+        .filter(c => new Date(c.due) <= now)
+        .sort((a, b) => new Date(a.due) - new Date(b.due));
+
+    if (learningDueNow.length > 0) {
+        return learningDueNow[0];
+    }
+
+    // ---- Priority 2: Review cards not yet shown ----
+    const nextReview = App.sessionReviewQueue
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried && c.state === 'review')
+        .find(Boolean);
+
+    if (nextReview) {
+        return nextReview;
+    }
+
+    // ---- Priority 3: New cards not yet shown ----
+    const nextNew = App.sessionNewQueue
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried && c.state === 'new')
+        .find(Boolean);
+
+    if (nextNew) {
+        return nextNew;
+    }
+
+    // ---- Priority 4: Learning cards not yet due (Learn Ahead) ----
+    // If nothing else is available, show the soonest learning card
+    // regardless of whether its interval has elapsed.
+    // This matches AnkiDroid's Learn Ahead Limit behaviour.
+    const learningPending = getLearningCardsInSession()
+        .filter(c => new Date(c.due) > now)
+        .sort((a, b) => new Date(a.due) - new Date(b.due));
+
+    if (learningPending.length > 0) {
+        return learningPending[0];
+    }
+
+    // Nothing left
+    return null;
+}
+
+// Returns all cards currently tracked in the learning pool that
+// are still in learning/relearning state (not graduated yet).
+function getLearningCardsInSession() {
+    const deckId = App.currentDeckId;
+    if (!deckId) return [];
+    return Array.from(App.learningPool)
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried &&
+            (c.state === 'learning' || c.state === 'relearning'));
+}
+
+// How many seconds until the next learning card becomes due.
+// Returns 0 if one is already due, Infinity if none in pool.
+function secondsUntilNextLearning() {
+    const now = new Date();
+    const learningPending = getLearningCardsInSession()
+        .filter(c => new Date(c.due) > now)
+        .sort((a, b) => new Date(a.due) - new Date(b.due));
+    if (learningPending.length === 0) return Infinity;
+    return Math.max(0, Math.ceil((new Date(learningPending[0].due) - now) / 1000));
+}
+
+// True if there is absolutely nothing left (no learning, no review, no new)
+function sessionIsComplete() {
+    const noLearning = getLearningCardsInSession().length === 0;
+    const noReview = App.sessionReviewQueue
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried && c.state === 'review')
+        .length === 0;
+    const noNew = App.sessionNewQueue
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried && c.state === 'new')
+        .length === 0;
+    return noLearning && noReview && noNew;
+}
+
+// ================================================================
+//  REVIEW ENGINE
+// ================================================================
+
+async function startReviewForDeck(deckId) {
+    console.log('🔹 startReviewForDeck:', deckId);
+    try {
+        const deck = App.decks.find(d => d.id === deckId);
+        if (!deck) {
+            alert('Deck not found.');
+            return;
+        }
+
+        if (App.session) {
+            await discardSession();
+        }
+
+        // Build initial queues
+        const learningDue = getLearningCards(deckId)
+            .filter(c => new Date(c.due) <= new Date())
+            .sort((a, b) => new Date(a.due) - new Date(b.due));
+
+        const reviewDue = getReviewCards(deckId)
+            .filter(c => new Date(c.due) <= new Date())
+            .sort((a, b) => new Date(a.due) - new Date(b.due));
+
+        const newCards = getNewCards(deckId);
+
+        // Also pull any learning cards that exist for this deck (even not yet due)
+        // so they can appear via Learn Ahead if nothing else exists
+        const allLearning = getLearningCards(deckId);
+
+        if (learningDue.length === 0 && reviewDue.length === 0 && newCards.length === 0 && allLearning.length === 0) {
+            alert('No cards due in this deck. Try adding more cards or waiting for intervals to expire.');
+            return;
+        }
+
+        // Reset session state
+        App.currentDeckId = deckId;
+        App.sessionNewQueue = newCards.map(c => c.id);
+        App.sessionReviewQueue = reviewDue.map(c => c.id);
+        App.learningPool = new Set(allLearning.map(c => c.id));
+        // Also add any currently-due learning cards to the pool
+        for (const c of learningDue) App.learningPool.add(c.id);
+        App.shownNewIds = new Set();
+        App.shownReviewIds = new Set();
+        App.currentCardId = null;
+        App.sessionStats = { total: 0, again: 0, hard: 0, good: 0, easy: 0 };
+        App.sessionStartTime = Date.now();
+        App.sessionElapsedSeconds = 0;
+        App.timerPaused = false;
+        App.isReviewActive = true;
+        App.isReviewing = true;
+
+        // Persist session
+        App.session = {
+            id: generateId(),
+            deckId,
+            createdAt: nowISO(),
+            startedAt: nowISO(),
+            finished: false,
+            sessionNewQueue: App.sessionNewQueue,
+            sessionReviewQueue: App.sessionReviewQueue,
+            learningPool: Array.from(App.learningPool),
+            shownNewIds: [],
+            shownReviewIds: [],
+            lastActivity: nowISO(),
+        };
+        await App.storage.put('sessions', App.session);
+
+        enterReviewMode();
+        renderReviewCard();
+        startReviewTimer();
+    } catch (err) {
+        console.error('❌ startReviewForDeck error:', err);
+        alert('An error occurred while starting review. Check console for details.');
+    }
+}
+
+function enterReviewMode() {
+    const overlay = document.getElementById('reviewOverlay');
+    if (overlay) {
+        overlay.style.display = 'flex';
+        overlay.classList.add('active');
+    }
+}
+
+function exitReviewMode() {
+    stopWaitingScreen();
+    const overlay = document.getElementById('reviewOverlay');
+    if (overlay) {
+        overlay.classList.remove('active');
+        overlay.style.display = '';
+    }
+    stopReviewTimer();
+    App.isReviewActive = false;
+    App.isReviewing = false;
+    if (App.session) {
+        saveSessionState();
+    }
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('decks').classList.add('active');
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.nav-btn[data-tab="decks"]').forEach(b => b.classList.add('active'));
+    updateUI();
+}
+
+function startReviewTimer() {
+    if (App.sessionTimerInterval) clearInterval(App.sessionTimerInterval);
+    App.sessionStartTime = Date.now() - (App.sessionElapsedSeconds * 1000);
+    App.sessionTimerInterval = setInterval(() => {
+        if (!App.timerPaused && App.isReviewActive) {
+            App.sessionElapsedSeconds = Math.floor((Date.now() - App.sessionStartTime) / 1000);
+            const el = document.getElementById('reviewTimerDisplay');
+            if (el) el.textContent = `⏱️ ${formatTimeMMSS(App.sessionElapsedSeconds)}`;
+        }
+    }, 500);
+}
+
+function stopReviewTimer() {
+    if (App.sessionTimerInterval) {
+        clearInterval(App.sessionTimerInterval);
+        App.sessionTimerInterval = null;
+    }
+}
+
+function resumeReview() {
+    const session = App.session;
+    if (!session) return;
+
+    App.currentDeckId = session.deckId;
+    App.sessionNewQueue = session.sessionNewQueue || [];
+    App.sessionReviewQueue = session.sessionReviewQueue || [];
+    App.learningPool = new Set(session.learningPool || []);
+    App.shownNewIds = new Set(session.shownNewIds || []);
+    App.shownReviewIds = new Set(session.shownReviewIds || []);
+    App.currentCardId = null;
+    App.sessionStats = { total: 0, again: 0, hard: 0, good: 0, easy: 0 };
+    App.sessionStartTime = Date.now();
+    App.sessionElapsedSeconds = 0;
+    App.timerPaused = false;
+    App.isReviewActive = true;
+    App.isReviewing = true;
+
+    enterReviewMode();
+    renderReviewCard();
+    startReviewTimer();
+}
+
+// ================================================================
+//  RENDER REVIEW CARD — Dynamic, Anki-accurate
+// ================================================================
+
+function renderReviewCard() {
+    stopWaitingScreen(); // clear any waiting screen if running
+
+    if (!App.isReviewActive) return;
+
+    // Check if the session is truly complete
+    if (sessionIsComplete()) {
+        showSessionComplete();
+        return;
+    }
+
+    const card = pickNextCard();
+
+    if (!card) {
+        // pickNextCard returned null but sessionIsComplete() was false —
+        // this shouldn't happen, but be defensive
+        showSessionComplete();
+        return;
+    }
+
+    // If the card is a learning card not yet due (learn-ahead scenario),
+    // check if we should wait or show it.
+    // Anki's default: show early if it's the only thing left (we already
+    // do this in pickNextCard via Priority 4). So if we got here, just show it.
+
+    App.currentCardId = card.id;
+
+    // Update the UI
+    document.getElementById('reviewQuestion').textContent = card.front;
+    document.getElementById('reviewAnswer').style.display = 'none';
+    document.getElementById('reviewAnswer').textContent = '';
+    document.getElementById('showBtn').classList.remove('hidden');
+    document.querySelectorAll('#reviewButtons button').forEach(b => b.classList.add('hidden'));
+
+    // Show card box, hide waiting screen
+    document.getElementById('cardDisplay').style.display = '';
+    document.getElementById('waitingScreen').classList.add('hidden');
+
+    // Update progress display
+    updateProgressDisplay();
+    updateReviewColorCounts();
+}
+
+function showSessionComplete() {
+    document.getElementById('reviewQuestion').textContent = '🎉 All cards reviewed!';
+    document.getElementById('reviewAnswer').style.display = 'none';
+    document.getElementById('reviewAnswer').textContent = '';
+    document.getElementById('showBtn').classList.add('hidden');
+    document.querySelectorAll('#reviewButtons button').forEach(b => b.classList.add('hidden'));
+    document.getElementById('cardDisplay').style.display = '';
+    document.getElementById('waitingScreen').classList.add('hidden');
+    document.getElementById('reviewProgressText').textContent = '✅ Done!';
+
+    stopReviewTimer();
+    App.isReviewActive = false;
+    completeSession();
+    updateReviewColorCounts();
+
+    setTimeout(() => {
+        exitReviewMode();
+    }, 2000);
+}
+
+// ================================================================
+//  WAITING SCREEN — shown when learning cards aren't due yet
+//  AND other cards exist that must be reviewed first.
+//  (In practice with our Learn Ahead approach, this rarely shows,
+//   but kept as a fallback for edge cases.)
+// ================================================================
+
+function showWaitingScreen(secondsRemaining) {
+    document.getElementById('cardDisplay').style.display = 'none';
+    document.getElementById('waitingScreen').classList.remove('hidden');
+    document.querySelectorAll('#reviewButtons button').forEach(b => b.classList.add('hidden'));
+
+    const message = document.getElementById('waitingMessage');
+    const countdown = document.getElementById('waitingCountdown');
+    message.textContent = 'Learning card coming up...';
+
+    function tick() {
+        const secs = secondsUntilNextLearning();
+        if (secs === 0 || secs === Infinity) {
+            stopWaitingScreen();
+            renderReviewCard();
+            return;
+        }
+        countdown.textContent = formatTimeMMSS(secs);
+    }
+
+    tick();
+    App.waitingInterval = setInterval(() => {
+        const secs = secondsUntilNextLearning();
+        if (secs === 0 || secs === Infinity) {
+            stopWaitingScreen();
+            renderReviewCard();
+        } else {
+            countdown.textContent = formatTimeMMSS(secs);
+        }
+    }, 500);
+}
+
+function stopWaitingScreen() {
+    if (App.waitingInterval) {
+        clearInterval(App.waitingInterval);
+        App.waitingInterval = null;
+    }
+    const ws = document.getElementById('waitingScreen');
+    if (ws) ws.classList.add('hidden');
+    const cd = document.getElementById('cardDisplay');
+    if (cd) cd.style.display = '';
+}
+
+// ================================================================
+//  SHOW ANSWER
+// ================================================================
+
+function showAnswer() {
+    const card = getCard(App.currentCardId);
+    if (!card) return;
+
+    document.getElementById('reviewAnswer').textContent = card.back;
+    document.getElementById('reviewAnswer').style.display = 'block';
+    document.getElementById('showBtn').classList.add('hidden');
+
+    document.getElementById('againBtn').classList.remove('hidden');
+    document.getElementById('hardBtn').classList.remove('hidden');
+    document.getElementById('goodBtn').classList.remove('hidden');
+    document.getElementById('easyBtn').classList.remove('hidden');
+
+    const state = getCardState(card);
+    if (state === 'new' || state === 'learning' || state === 'relearning') {
+        document.getElementById('againBtn').textContent = '<1m Again';
+        document.getElementById('hardBtn').textContent = '<6m Hard';
+        document.getElementById('goodBtn').textContent = '<10m Good';
+        document.getElementById('easyBtn').textContent = '4d Easy';
+    } else {
+        const interval = card.interval || 1;
+        const ease = card.ease || 2.5;
+        const easyInterval = Math.round(interval * ease * 1.3);
+        const goodInterval = Math.round(interval * ease);
+        const hardInterval = Math.max(1, Math.round(interval * 0.8));
+        document.getElementById('againBtn').textContent = '10m Again';
+        document.getElementById('hardBtn').textContent = `${hardInterval}d Hard`;
+        document.getElementById('goodBtn').textContent = `${goodInterval}d Good`;
+        document.getElementById('easyBtn').textContent = `${easyInterval}d Easy`;
+    }
+}
+
+// ================================================================
+//  RATE CARD — Core of the fix
+// ================================================================
+
+async function rateCard(rating) {
+    if (!App.isReviewActive) return;
+    const card = getCard(App.currentCardId);
+    if (!card) return;
+
+    const oldState = card.state;
+    const result = scheduleCard(card, rating);
+
+    card.state = result.state;
+    card.interval = result.interval;
+    card.ease = result.ease;
+    card.reps = result.reps;
+    card.lapses = result.lapses;
+    card.due = result.due;
+    card.lastReview = nowISO();
+    card.modifiedAt = nowISO();
+    if (result.state === 'suspended') card.suspended = true;
+
+    // Save history
+    const historyEntry = {
+        cardId: card.id,
+        timestamp: nowISO(),
+        rating: ['Again', 'Hard', 'Good', 'Easy'][rating],
+        ratingValue: rating,
+        oldState,
+        newState: card.state,
+    };
+    await App.storage.put('history', historyEntry);
+    App.history.push(historyEntry);
+
+    // Update session stats
+    App.sessionStats.total++;
+    if (rating === 0) App.sessionStats.again++;
+    else if (rating === 1) App.sessionStats.hard++;
+    else if (rating === 2) App.sessionStats.good++;
+    else if (rating === 3) App.sessionStats.easy++;
+
+    await updateCard(card);
+
+    // ----------------------------------------------------------------
+    //  UPDATE THE DYNAMIC QUEUES — THIS IS THE FIX
+    // ----------------------------------------------------------------
+    //
+    //  Old behavior (broken): just increment an index and forget card.
+    //
+    //  New behavior (correct):
+    //
+    //  Case A: Card entered or stayed in learning state
+    //    → Add it to learningPool (so pickNextCard sees it as pending)
+    //    → Remove it from sessionNewQueue / sessionReviewQueue
+    //      (it no longer belongs there)
+    //
+    //  Case B: Card graduated to review (rating=Easy on learning card)
+    //    → Remove from learningPool, sessionNewQueue
+    //    → Don't add to sessionReviewQueue (already reviewed this session)
+    //
+    //  Case C: Card was already in review and rated good/hard/easy
+    //    → Remove from sessionReviewQueue (it's done for today)
+    //    → Don't touch learningPool
+    //
+    //  Case D: Review card pressed Again → goes to relearning
+    //    → Remove from sessionReviewQueue
+    //    → Add to learningPool
+    //
+    // ----------------------------------------------------------------
+
+    const newState = card.state;
+
+    if (newState === 'learning' || newState === 'relearning') {
+        // Card is (or stays) in learning — keep it in the pool
+        App.learningPool.add(card.id);
+        // Remove from static queues so it doesn't appear there again
+        App.sessionNewQueue = App.sessionNewQueue.filter(id => id !== card.id);
+        App.sessionReviewQueue = App.sessionReviewQueue.filter(id => id !== card.id);
+    } else if (newState === 'review') {
+        // Card graduated — remove from learning pool and static queues
+        App.learningPool.delete(card.id);
+        App.sessionNewQueue = App.sessionNewQueue.filter(id => id !== card.id);
+        App.sessionReviewQueue = App.sessionReviewQueue.filter(id => id !== card.id);
+    } else if (newState === 'suspended') {
+        // Suspended — remove from everything
+        App.learningPool.delete(card.id);
+        App.sessionNewQueue = App.sessionNewQueue.filter(id => id !== card.id);
+        App.sessionReviewQueue = App.sessionReviewQueue.filter(id => id !== card.id);
+    } else {
+        // Any other state (shouldn't happen normally) — treat as done
+        App.sessionNewQueue = App.sessionNewQueue.filter(id => id !== card.id);
+        App.sessionReviewQueue = App.sessionReviewQueue.filter(id => id !== card.id);
+        App.learningPool.delete(card.id);
+    }
+
+    updateStreakAndStudyTime();
+    await saveSessionState();
+    updateUI();
+
+    // Pick next card — this re-evaluates the full queue dynamically
+    renderReviewCard();
+}
+
+// ================================================================
+//  PROGRESS DISPLAY
+// ================================================================
+
+function updateProgressDisplay() {
+    // Count what's left to give the user a sense of progress
+    const learningCount = getLearningCardsInSession().length;
+    const reviewRemaining = App.sessionReviewQueue
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried && c.state === 'review').length;
+    const newRemaining = App.sessionNewQueue
+        .map(id => getCard(id))
+        .filter(c => c && !c.suspended && !c.buried && c.state === 'new').length;
+
+    const total = learningCount + reviewRemaining + newRemaining;
+    document.getElementById('reviewProgressText').textContent =
+        `${App.sessionStats.total} done · ${total} left`;
+}
+
+function updateReviewColorCounts() {
+    const deckId = App.currentDeckId;
+    if (!deckId) return;
+
+    const counts = getCardCounts(deckId);
+
+    const blueEl = document.getElementById('reviewBlueCount');
+    const redEl = document.getElementById('reviewRedCount');
+    const greenEl = document.getElementById('reviewGreenCount');
+    const deckNameEl = document.getElementById('reviewDeckName');
+
+    if (blueEl) blueEl.textContent = counts.blue || 0;
+    if (redEl) redEl.textContent = counts.red || 0;
+    if (greenEl) greenEl.textContent = counts.green || 0;
+
+    if (deckNameEl) {
+        const deck = App.decks.find(d => d.id === deckId);
+        if (deck) deckNameEl.textContent = getLocalName(deck.name);
+    }
+}
+
+// ================================================================
+//  STREAK DETECTION
+// ================================================================
+
+function updateStreakAndStudyTime() {
+    const today = todayStr();
+    const last = App.settings.lastStudyDate;
+    const goal = App.settings.dailyGoal || 20;
+
+    if (last !== today) {
+        let streak = App.settings.streak || 0;
+        let goalStreak = App.settings.goalStreak || 0;
+        const gap = last ? daysBetween(today, last) : 999;
+
+        if (gap === 1) {
+            streak += 1;
+            const metGoalYesterday = (App.settings.goalMetToday || false);
+            if (metGoalYesterday) {
+                goalStreak += 1;
+            } else {
+                goalStreak = 0;
+            }
+        } else {
+            streak = 1;
+            goalStreak = 0;
+        }
+
+        App.settings.streak = streak;
+        App.settings.goalStreak = goalStreak;
+        App.settings.lastStudyDate = today;
+        App.settings.reviewedToday = 0;
+        App.settings.goalMetToday = false;
+        App.settings.totalStudyTimeToday = 0;
+
+        App.storage.put('settings', { key: 'streak', value: streak });
+        App.storage.put('settings', { key: 'goalStreak', value: goalStreak });
+        App.storage.put('settings', { key: 'lastStudyDate', value: today });
+        App.storage.put('settings', { key: 'reviewedToday', value: 0 });
+        App.storage.put('settings', { key: 'goalMetToday', value: false });
+        App.storage.put('settings', { key: 'totalStudyTimeToday', value: 0 });
+    }
+
+    const reviewedToday = (App.settings.reviewedToday || 0) + 1;
+    App.settings.reviewedToday = reviewedToday;
+    App.storage.put('settings', { key: 'reviewedToday', value: reviewedToday });
+
+    if (reviewedToday >= goal && !App.settings.goalMetToday) {
+        App.settings.goalMetToday = true;
+        App.storage.put('settings', { key: 'goalMetToday', value: true });
+    }
+
+    const newTime = (App.settings.totalStudyTimeToday || 0) + 8;
+    App.settings.totalStudyTimeToday = newTime;
+    App.storage.put('settings', { key: 'totalStudyTimeToday', value: newTime });
+
+    renderStudyTime();
 }
 
 // ================================================================
@@ -719,36 +1449,14 @@ function renderStudyTime() {
     const monthEl = document.getElementById('monthStudyTime');
     if (monthEl) monthEl.textContent = formatTime(month);
 
-    // Update streaks
     const dailyStreakEl = document.getElementById('dailyStreakDisplay');
     if (dailyStreakEl) dailyStreakEl.textContent = `${App.settings.streak || 0} days`;
 
     const goalStreakEl = document.getElementById('goalStreakDisplay');
     if (goalStreakEl) goalStreakEl.textContent = `${App.settings.goalStreak || 0} days`;
-}
 
-function renderForecast() {
-    const container = document.getElementById('forecastContainer');
-    if (!container) return;
-    const now = new Date();
-    let maxCount = 1;
-    const counts = [];
-    for (let i = 0; i < 7; i++) {
-        const d = new Date(now);
-        d.setDate(d.getDate() + i);
-        const key = d.toISOString().split('T')[0];
-        const count = App.cards.filter(c => !c.suspended && !c.buried && c.due.split('T')[0] === key).length;
-        counts.push(count);
-        if (count > maxCount) maxCount = count;
-    }
-    const labels = ['Today','+1','+2','+3','+4','+5','+6'];
-    container.innerHTML = counts.map((c, idx) => {
-        const pct = maxCount > 0 ? Math.max(4, (c / maxCount) * 70) : 4;
-        return `<div class="forecast-bar" style="height:${pct}px;">
-            <span class="count">${c}</span>
-            <span class="label">${labels[idx]}</span>
-        </div>`;
-    }).join('');
+    const goalLabel = document.getElementById('goalLabel');
+    if (goalLabel) goalLabel.textContent = App.settings.dailyGoal || 20;
 }
 
 function renderWeakTopic() {
@@ -784,7 +1492,7 @@ function renderSmartGoal() {
         if (c.suspended || c.buried) return false;
         const d = new Date(c.due);
         const now = new Date();
-        return d > now && d <= new Date(now.getTime() + 3*86400000);
+        return d > now && d <= new Date(now.getTime() + 3 * 86400000);
     }).length;
     const total = due + upcoming;
     if (total === 0) {
@@ -808,7 +1516,7 @@ function updateGoalPill() {
 }
 
 function populateDeckSelects() {
-    const selects = ['reviewDeckSelect', 'statsDeckSelect'];
+    const selects = ['statsDeckSelect'];
     for (const id of selects) {
         const el = document.getElementById(id);
         if (!el) continue;
@@ -844,10 +1552,27 @@ function renderDeckTree() {
     });
 
     container.querySelectorAll('.deck-name').forEach(el => {
-        el.addEventListener('click', () => {
-            const deckId = el.dataset.deckId;
-            if (deckId) selectDeck(deckId);
+        el.addEventListener('click', function () {
+            const deckId = this.dataset.deckId;
+            if (deckId) startReviewForDeck(deckId);
         });
+    });
+
+    container.querySelectorAll('.deck-item').forEach(el => {
+        el.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const deckId = el.querySelector('.deck-name')?.dataset.deckId;
+            if (deckId) showDeckMenu(deckId, e.clientX || e.pageX, e.clientY || e.pageY);
+        });
+        let longPressTimer = null;
+        el.addEventListener('touchstart', (e) => {
+            longPressTimer = setTimeout(() => {
+                const deckId = el.querySelector('.deck-name')?.dataset.deckId;
+                if (deckId) showDeckMenu(deckId, e.touches[0].clientX, e.touches[0].clientY);
+            }, 600);
+        });
+        el.addEventListener('touchend', () => clearTimeout(longPressTimer));
+        el.addEventListener('touchmove', () => clearTimeout(longPressTimer));
     });
 }
 
@@ -856,20 +1581,24 @@ function renderTreeNodes(deckList, level = 0) {
     for (const deck of deckList) {
         const children = App.decks.filter(d => d.parentId === deck.id);
         const isExpanded = App.expandedDecks[deck.id] !== undefined ? App.expandedDecks[deck.id] : false;
-        const counts = getDeckCounts(deck.id);
+        const counts = getCardCounts(deck.id);
         const localName = getLocalName(deck.name);
 
         html += `<li>
             <div class="deck-item">
-                ${children.length > 0 ? `<span class="arrow" data-deck-id="${deck.id}">${isExpanded ? '▼' : '▶'}</span>` : `<span class="arrow" style="opacity:0;">▶</span>`}
+                ${children.length > 0
+                    ? `<span class="arrow" data-deck-id="${deck.id}">${isExpanded ? '▼' : '▶'}</span>`
+                    : `<span class="arrow" style="opacity:0;">▶</span>`}
                 <span class="deck-icon"><i class="fas fa-folder"></i></span>
                 <span class="deck-name" data-deck-id="${deck.id}">${localName}</span>
-                <span class="badge">${counts.total} (${counts.due})</span>
+                <span class="badge">
+                    <span class="blue-count">${counts.blue}</span>
+                    <span class="red-count">${counts.red}</span>
+                    <span class="green-count">${counts.green}</span>
+                    <span class="total-count">(${counts.total})</span>
+                </span>
                 <div class="actions">
-                    <button onclick="createSubdeckAction('${deck.id}')" title="Create Subdeck"><i class="fas fa-plus-circle"></i></button>
-                    <button onclick="importToDeck('${deck.id}')" title="Import"><i class="fas fa-upload"></i></button>
-                    <button onclick="addCardToDeck('${deck.id}')" title="Add Card"><i class="fas fa-file"></i></button>
-                    <button onclick="deleteDeckAction('${deck.id}')" title="Delete"><i class="fas fa-trash"></i></button>
+                    <button class="menu-btn" data-deck-id="${deck.id}" title="Menu"><i class="fas fa-ellipsis-v"></i></button>
                 </div>
             </div>`;
         if (children.length > 0) {
@@ -881,95 +1610,114 @@ function renderTreeNodes(deckList, level = 0) {
     return html;
 }
 
-function selectDeck(deckId) {
-    const info = document.getElementById('selectedDeckInfo');
-    const nameEl = document.getElementById('selectedDeckName');
+// ================================================================
+//  DECK MENU
+// ================================================================
+
+let deckMenuVisible = false;
+let menuDeckId = null;
+
+function showDeckMenu(deckId, x, y) {
+    if (deckMenuVisible) hideDeckMenu();
     const deck = App.decks.find(d => d.id === deckId);
     if (!deck) return;
-    const counts = getDeckCounts(deckId);
-    nameEl.textContent = `📁 ${getLocalName(deck.name)} (${counts.total} cards)`;
-    info.style.display = 'block';
+    menuDeckId = deckId;
+    deckMenuVisible = true;
 
-    document.querySelectorAll('.deck-item').forEach(el => el.classList.remove('highlight'));
-    const highlight = document.querySelector(`.deck-item .deck-name[data-deck-id="${deckId}"]`);
-    if (highlight) highlight.closest('.deck-item').classList.add('highlight');
+    let menu = document.getElementById('deckMenu');
+    if (!menu) {
+        menu = document.createElement('div');
+        menu.id = 'deckMenu';
+        menu.style.cssText = `
+            position: fixed;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            padding: 8px 0;
+            z-index: 500;
+            min-width: 190px;
+            display: none;
+        `;
+        document.body.appendChild(menu);
+    }
 
-    document.getElementById('toggleCardsBtn').onclick = () => toggleCardsView(deckId);
-    document.getElementById('importToDeckBtn').onclick = () => importToDeck(deckId);
-    document.getElementById('addCardToDeckBtn').onclick = () => addCardToDeck(deckId);
+    const counts = getCardCounts(deckId);
+    const dueCount = counts.due || 0;
+
+    menu.innerHTML = `
+        <button onclick="reviewFromMenu('${deckId}')" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.9rem;color:var(--primary);font-weight:600;border-bottom:1px solid var(--border);">
+            <i class="fas fa-play"></i> Review Cards ${dueCount > 0 ? '(' + dueCount + ' due)' : ''}
+        </button>
+        <button onclick="createSubdeckAction('${deckId}')" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.9rem;color:var(--text);">
+            <i class="fas fa-folder-plus"></i> Create Subdeck
+        </button>
+        <button onclick="renameDeckAction('${deckId}')" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.9rem;color:var(--text);">
+            <i class="fas fa-edit"></i> Rename Deck
+        </button>
+        <button onclick="importToDeck('${deckId}')" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.9rem;color:var(--text);">
+            <i class="fas fa-upload"></i> Import Cards
+        </button>
+        <button onclick="deleteDeckAction('${deckId}')" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:0.9rem;color:var(--danger);">
+            <i class="fas fa-trash"></i> Delete Deck
+        </button>
+    `;
+
+    const menuWidth = 200;
+    const menuHeight = 220;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    let left = x;
+    let top = y;
+
+    if (left + menuWidth > viewportWidth) left = viewportWidth - menuWidth - 10;
+    if (top + menuHeight > viewportHeight) top = viewportHeight - menuHeight - 10;
+    if (left < 10) left = 10;
+    if (top < 10) top = 10;
+
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.style.display = 'block';
+
+    setTimeout(() => {
+        document.addEventListener('click', hideDeckMenu);
+    }, 100);
 }
 
-let cardsVisible = false;
-
-function toggleCardsView(deckId) {
-    const container = document.getElementById('deckCardListContainer');
-    const btn = document.getElementById('toggleCardsBtn');
-    if (cardsVisible) {
-        container.style.display = 'none';
-        btn.innerHTML = '<i class="fas fa-list"></i> View Cards';
-        cardsVisible = false;
-    } else {
-        container.style.display = 'block';
-        btn.innerHTML = '<i class="fas fa-chevron-up"></i> Hide Cards';
-        cardsVisible = true;
-        showCardsInDeck(deckId);
-    }
+function hideDeckMenu() {
+    const menu = document.getElementById('deckMenu');
+    if (menu) menu.style.display = 'none';
+    deckMenuVisible = false;
+    menuDeckId = null;
+    document.removeEventListener('click', hideDeckMenu);
 }
 
-function showCardsInDeck(deckId) {
-    const container = document.getElementById('deckCardList');
-    const filtered = App.cards.filter(c => c.deckId === deckId);
-    if (filtered.length === 0) {
-        container.innerHTML = `<p class="text-muted">No cards in this deck.</p>
-            <button onclick="addCardToDeck('${deckId}')" class="btn-primary" style="margin-top:8px;"><i class="fas fa-plus"></i> Add Card</button>`;
-        return;
-    }
-    let html = `<h4>${getLocalName(App.decks.find(d => d.id === deckId)?.name)} (${filtered.length} cards)</h4>
-        <button onclick="addCardToDeck('${deckId}')" class="btn-primary" style="font-size:0.8rem;margin-bottom:8px;"><i class="fas fa-plus"></i> Add Card</button>
-        <div style="max-height:300px;overflow-y:auto;">`;
-    for (const c of filtered) {
-        const tags = c.tags && c.tags.length ? c.tags.map(t => `#${t}`).join(' ') : '';
-        html += `<div class="card-entry">
-            <span class="card-text"><span class="front">${c.front}</span> → <span class="back">${c.back}</span> ${tags ? `<span class="card-tags">${tags}</span>` : ''}</span>
-            <div class="actions">
-                <button onclick="editCardAction('${c.id}')"><i class="fas fa-edit"></i></button>
-                <button onclick="deleteCardAction('${c.id}')"><i class="fas fa-trash"></i></button>
-            </div>
-        </div>`;
-    }
-    html += '</div>';
-    container.innerHTML = html;
-
-    // Hide cards button
-    document.getElementById('hideCardsBtn').onclick = () => {
-        document.getElementById('deckCardListContainer').style.display = 'none';
-        document.getElementById('toggleCardsBtn').innerHTML = '<i class="fas fa-list"></i> View Cards';
-        cardsVisible = false;
-    };
+function reviewFromMenu(deckId) {
+    hideDeckMenu();
+    startReviewForDeck(deckId);
 }
-
-// ================================================================
-//  ACTION FUNCTIONS
-// ================================================================
 
 async function createSubdeckAction(deckId) {
+    hideDeckMenu();
     await createSubdeck(deckId);
 }
 
-async function addCardToDeck(deckId) {
-    const front = prompt('Enter question:');
-    if (!front) return;
-    const back = prompt('Enter answer:');
-    if (!back) return;
-    await createCard({ front, back, deckId });
+async function renameDeckAction(deckId) {
+    hideDeckMenu();
+    const deck = App.decks.find(d => d.id === deckId);
+    if (!deck) return;
+    const newName = prompt(`Rename "${getLocalName(deck.name)}" to:`, deck.name);
+    if (!newName || newName.trim() === deck.name) return;
+    await renameDeck(deckId, newName.trim());
     updateUI();
-    if (deckId) showCardsInDeck(deckId);
 }
 
 async function deleteDeckAction(deckId) {
+    hideDeckMenu();
     const deck = App.decks.find(d => d.id === deckId);
     if (!deck) return;
-    const counts = getDeckCounts(deckId);
+    const counts = getCardCounts(deckId);
     if (!confirm(`Delete deck "${getLocalName(deck.name)}" and all ${counts.total} cards inside it?`)) return;
     await deleteDeck(deckId);
     document.getElementById('selectedDeckInfo').style.display = 'none';
@@ -977,37 +1725,19 @@ async function deleteDeckAction(deckId) {
     updateUI();
 }
 
-async function editCardAction(cardId) {
-    const card = getCard(cardId);
-    if (!card) return;
-    const front = prompt('Edit question:', card.front);
-    if (front !== null) card.front = front;
-    const back = prompt('Edit answer:', card.back);
-    if (back !== null) card.back = back;
-    await updateCard(card);
-    const deckId = card.deckId;
-    if (deckId) showCardsInDeck(deckId);
-}
-
-async function deleteCardAction(cardId) {
-    if (!confirm('Delete this card?')) return;
-    const card = getCard(cardId);
-    await deleteCard(cardId);
-    if (card) {
-        const deckId = card.deckId;
-        if (deckId) showCardsInDeck(deckId);
-    }
-    updateUI();
-}
+// ================================================================
+//  IMPORT / EXPORT
+// ================================================================
 
 async function importToDeck(deckId) {
+    hideDeckMenu();
     const input = document.getElementById('importFileInput');
     input.value = '';
-    input.onchange = async function() {
+    input.onchange = async function () {
         const file = input.files[0];
         if (!file) return;
         const reader = new FileReader();
-        reader.onload = async function(ev) {
+        reader.onload = async function (ev) {
             const text = ev.target.result;
             const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
             let count = 0;
@@ -1022,7 +1752,6 @@ async function importToDeck(deckId) {
             }
             alert(`✅ Imported ${count} cards into "${getLocalName(App.decks.find(d => d.id === deckId)?.name)}".`);
             updateUI();
-            if (deckId) showCardsInDeck(deckId);
         };
         reader.readAsText(file);
         input.value = '';
@@ -1031,208 +1760,18 @@ async function importToDeck(deckId) {
     input.click();
 }
 
-// ================================================================
-//  REVIEW ENGINE
-// ================================================================
-
-async function startReview(deckId) {
-    let queue = getDueCards();
-    if (deckId && deckId !== 'all') {
-        const descendantIds = getDescendantIds(deckId);
-        queue = queue.filter(c => descendantIds.includes(c.deckId));
+async function exportAll() {
+    let text = '';
+    for (const c of App.cards) {
+        text += `${c.front};${c.back}\n`;
     }
-    queue.sort((a, b) => {
-        const order = { 'learning': 0, 'relearning': 1, 'review': 2, 'new': 3 };
-        return (order[a.state] || 4) - (order[b.state] || 4);
-    });
-
-    if (queue.length === 0) {
-        document.getElementById('reviewProgress').textContent = '0 / 0';
-        document.getElementById('reviewQuestion').textContent = '🎉 No cards due!';
-        document.getElementById('reviewAnswer').style.display = 'none';
-        document.getElementById('reviewAnswer').textContent = '';
-        document.getElementById('reviewTimer').textContent = '⏱️ 00:00';
-        document.querySelectorAll('#reviewButtons button').forEach(b => b.classList.add('hidden'));
-        return;
-    }
-
-    const session = await createSession(deckId, queue);
-    App.isReviewing = true;
-    App.reviewQueue = queue;
-    App.reviewIndex = 0;
-    App.sessionStartTime = Date.now();
-    App.sessionElapsedSeconds = 0;
-    App.sessionStats = { total: 0, again: 0, hard: 0, good: 0, easy: 0 };
-
-    // Start timer
-    if (App.sessionTimerInterval) clearInterval(App.sessionTimerInterval);
-    App.sessionTimerInterval = setInterval(() => {
-        App.sessionElapsedSeconds = Math.floor((Date.now() - App.sessionStartTime) / 1000);
-        document.getElementById('reviewTimer').textContent = `⏱️ ${formatTimeMMSS(App.sessionElapsedSeconds)}`;
-    }, 500);
-
-    document.getElementById('reviewExtra').classList.add('hidden');
-    renderReviewCard();
-}
-
-function renderReviewCard() {
-    if (App.reviewIndex >= App.reviewQueue.length || !App.isReviewing) {
-        document.getElementById('reviewProgress').textContent = '✅ Complete!';
-        document.getElementById('reviewQuestion').textContent = 'Review complete! Great job.';
-        document.getElementById('reviewAnswer').style.display = 'none';
-        document.querySelectorAll('#reviewButtons button').forEach(b => b.classList.add('hidden'));
-        if (App.sessionTimerInterval) clearInterval(App.sessionTimerInterval);
-        showSessionSummary();
-        App.isReviewing = false;
-        return;
-    }
-
-    const card = App.reviewQueue[App.reviewIndex];
-    document.getElementById('reviewProgress').textContent = `${App.reviewIndex + 1} / ${App.reviewQueue.length}`;
-    document.getElementById('reviewQuestion').textContent = card.front;
-    document.getElementById('reviewAnswer').style.display = 'none';
-    document.getElementById('reviewAnswer').textContent = '';
-
-    document.getElementById('showBtn').classList.remove('hidden');
-    document.getElementById('againBtn').classList.add('hidden');
-    document.getElementById('hardBtn').classList.add('hidden');
-    document.getElementById('goodBtn').classList.add('hidden');
-    document.getElementById('easyBtn').classList.add('hidden');
-}
-
-function showAnswer() {
-    const card = App.reviewQueue[App.reviewIndex];
-    document.getElementById('reviewAnswer').textContent = card.back;
-    document.getElementById('reviewAnswer').style.display = 'block';
-
-    document.getElementById('showBtn').classList.add('hidden');
-    document.getElementById('againBtn').classList.remove('hidden');
-    document.getElementById('hardBtn').classList.remove('hidden');
-    document.getElementById('goodBtn').classList.remove('hidden');
-    document.getElementById('easyBtn').classList.remove('hidden');
-}
-
-async function rateCard(rating) {
-    if (!App.isReviewing) return;
-    const card = App.reviewQueue[App.reviewIndex];
-    if (!card) return;
-
-    const result = scheduleCard(card, rating);
-    card.state = result.state;
-    card.interval = result.interval;
-    card.ease = result.ease;
-    card.reps = result.reps;
-    card.lapses = result.lapses;
-    card.due = result.due;
-    card.lastReview = nowISO();
-    card.modifiedAt = nowISO();
-    if (result.state === 'suspended') card.suspended = true;
-
-    const historyEntry = {
-        cardId: card.id,
-        timestamp: nowISO(),
-        rating: ['Again', 'Hard', 'Good', 'Easy'][rating],
-        ratingValue: rating,
-        oldState: card.state,
-        newState: card.state,
-    };
-    await App.storage.put('history', historyEntry);
-    App.history.push(historyEntry);
-
-    App.sessionStats.total++;
-    if (rating === 0) App.sessionStats.again++;
-    else if (rating === 1) App.sessionStats.hard++;
-    else if (rating === 2) App.sessionStats.good++;
-    else if (rating === 3) App.sessionStats.easy++;
-
-    await updateCard(card);
-
-    if (App.session) {
-        if (!App.session.completedIds.includes(card.id)) {
-            App.session.completedIds.push(card.id);
-        }
-        App.session.currentIndex = App.session.completedIds.length;
-        await updateSession(App.session);
-    }
-
-    App.reviewIndex++;
-    renderReviewCard();
-    updateUI();
-}
-
-function showSessionSummary() {
-    const duration = Math.round((Date.now() - App.sessionStartTime) / 1000);
-    const total = App.sessionStats.total || 0;
-    const retention = total ? Math.round(((App.sessionStats.good + App.sessionStats.easy) / total) * 100) : 0;
-    const el = document.getElementById('reviewExtra');
-    el.classList.remove('hidden');
-    el.innerHTML = `
-        <h4>📊 Session Complete</h4>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.9rem;margin-top:8px;">
-            <span>⏱ ${formatTime(duration)}</span>
-            <span>📝 ${total} cards</span>
-            <span>✅ Retention: ${retention}%</span>
-            <span>🔴 Again: ${App.sessionStats.again}</span>
-            <span>🟡 Hard: ${App.sessionStats.hard}</span>
-            <span>🟢 Good: ${App.sessionStats.good}</span>
-            <span>🌟 Easy: ${App.sessionStats.easy}</span>
-        </div>
-        <button onclick="closeSessionSummary()" class="btn-primary" style="margin-top:12px;">OK</button>
-    `;
-    updateStreakAndStudyTime(duration);
-    if (App.session) {
-        completeSession(App.session);
-    }
-    updateUI();
-}
-
-function closeSessionSummary() {
-    document.getElementById('reviewExtra').classList.add('hidden');
-    document.getElementById('reviewProgress').textContent = '0 / 0';
-    document.getElementById('reviewQuestion').textContent = 'Select a deck and tap "Start".';
-    document.getElementById('reviewAnswer').style.display = 'none';
-    document.getElementById('reviewAnswer').textContent = '';
-    document.getElementById('reviewTimer').textContent = '⏱️ 00:00';
-    document.querySelectorAll('#reviewButtons button').forEach(b => b.classList.add('hidden'));
-    if (App.sessionTimerInterval) clearInterval(App.sessionTimerInterval);
-    App.isReviewing = false;
-    updateUI();
-}
-
-function updateStreakAndStudyTime(sessionDuration) {
-    const today = todayStr();
-    const last = App.settings.lastStudyDate;
-    let streak = App.settings.streak || 0;
-    let goalStreak = App.settings.goalStreak || 0;
-    const reviewedToday = App.settings.reviewedToday || 0;
-
-    // Update streak
-    if (last !== today) {
-        const diff = daysBetween(today, last);
-        if (diff <= 1) {
-            if (reviewedToday > 0) streak++;
-            if (reviewedToday >= App.settings.dailyGoal) goalStreak++;
-        } else {
-            streak = reviewedToday > 0 ? 1 : 0;
-            goalStreak = reviewedToday >= App.settings.dailyGoal ? 1 : 0;
-        }
-        App.settings.streak = streak;
-        App.settings.goalStreak = goalStreak;
-        App.settings.lastStudyDate = today;
-        App.storage.put('settings', { key: 'streak', value: streak });
-        App.storage.put('settings', { key: 'goalStreak', value: goalStreak });
-        App.storage.put('settings', { key: 'lastStudyDate', value: today });
-    }
-
-    // Update study time
-    if (sessionDuration > 0) {
-        App.settings.totalStudyTimeToday = (App.settings.totalStudyTimeToday || 0) + sessionDuration;
-        App.storage.put('settings', { key: 'totalStudyTimeToday', value: App.settings.totalStudyTimeToday });
-    }
-
-    // Update reviewed today
-    App.settings.reviewedToday = reviewedToday + App.sessionStats.total;
-    App.storage.put('settings', { key: 'reviewedToday', value: App.settings.reviewedToday });
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `flashcards_export_${todayStr()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 // ================================================================
@@ -1263,14 +1802,14 @@ function renderStatsTab() {
 
     const retention = getRetention(deckId, 30);
     const readiness = getExamReadiness(deckId);
-    const counts = getDeckCounts(deckId);
+    const counts = getCardCounts(deckId);
 
     document.getElementById('statsRetention').innerHTML = `<strong>${getLocalName(deck.name)}</strong>: ${retention}%`;
     document.getElementById('statsReadiness').innerHTML = `<strong>${getLocalName(deck.name)}</strong>: ${readiness}/100`;
     document.getElementById('statsMaturity').innerHTML = `
-        <div>🆕 New: ${counts.new}</div>
-        <div>📖 Learning: ${counts.learning}</div>
-        <div>✅ Review: ${counts.review}</div>
+        <div>🔵 New: ${counts.blue}</div>
+        <div>🔴 Learning: ${counts.red}</div>
+        <div>🟢 Review: ${counts.green}</div>
         <div>⛔ Suspended: ${counts.suspended}</div>
     `;
 
@@ -1285,9 +1824,9 @@ function renderStatsTab() {
             return c.deckId === deckId && c.due.split('T')[0] === key;
         }).length;
         distHtml += `<div style="display:flex;gap:8px;align-items:center;padding:2px 0;">
-            <span style="width:50px;font-size:0.7rem;">${i===0?'Today':'Day '+i}</span>
+            <span style="width:50px;font-size:0.7rem;">${i === 0 ? 'Today' : 'Day ' + i}</span>
             <div style="flex:1;background:var(--border);height:4px;border-radius:2px;">
-                <div style="height:100%;width:${Math.min(100,count*8)}%;background:var(--primary);border-radius:2px;"></div>
+                <div style="height:100%;width:${Math.min(100, count * 8)}%;background:var(--primary);border-radius:2px;"></div>
             </div>
             <span style="font-size:0.7rem;">${count}</span>
         </div>`;
@@ -1298,51 +1837,6 @@ function renderStatsTab() {
     document.getElementById('insightsContainer').innerHTML = insights.map(i =>
         `<div class="insight">${i}</div>`
     ).join('');
-}
-
-// ================================================================
-//  EXPORT / IMPORT
-// ================================================================
-
-async function exportAll() {
-    let text = '';
-    for (const c of App.cards) {
-        text += `${c.front};${c.back}\n`;
-    }
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `flashcards_export_${todayStr()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
-async function resetAll() {
-    if (!confirm('⚠️ This will delete ALL your cards, decks, and history. This cannot be undone! Are you sure?')) return;
-    if (!confirm('Really? All data will be permanently lost.')) return;
-    await App.storage.clear('cards');
-    await App.storage.clear('decks');
-    await App.storage.clear('history');
-    await App.storage.clear('sessions');
-    await App.storage.clear('settings');
-    await App.storage.clear('deckNames');
-    location.reload();
-}
-
-// ================================================================
-//  NAVIGATION
-// ================================================================
-
-function navigateTo(tab) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    const target = document.getElementById(tab);
-    if (target) target.classList.add('active');
-    document.querySelectorAll(`.nav-btn[data-tab="${tab}"]`).forEach(b => b.classList.add('active'));
-    if (tab === 'stats') renderStatsTab();
-    document.getElementById('sidebar').classList.remove('open');
-    document.getElementById('overlay').classList.remove('show');
 }
 
 // ================================================================
@@ -1374,9 +1868,24 @@ async function setGoal() {
     if (val > 0 && val < 1000) {
         App.settings.dailyGoal = val;
         await App.storage.put('settings', { key: 'dailyGoal', value: val });
+        document.getElementById('goalDisplay').textContent = `Goal set to ${val} cards/day.`;
         updateUI();
         alert(`✅ Daily goal set to ${val} cards/day.`);
     }
+}
+
+// ================================================================
+//  NAVIGATION
+// ================================================================
+
+function navigateTo(tab) {
+    hideDeckMenu();
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    const target = document.getElementById(tab);
+    if (target) target.classList.add('active');
+    document.querySelectorAll(`.nav-btn[data-tab="${tab}"]`).forEach(b => b.classList.add('active'));
+    if (tab === 'stats') renderStatsTab();
 }
 
 // ================================================================
@@ -1385,7 +1894,6 @@ async function setGoal() {
 
 function updateUI() {
     renderStatStrip();
-    renderForecast();
     renderWeakTopic();
     renderSmartGoal();
     renderDeckTree();
@@ -1424,43 +1932,18 @@ async function initApp() {
     applyTheme(App.settings.theme || 'light');
 
     const session = await loadSession();
-    if (session) {
-        const progress = {
-            completed: session.completedIds.length,
-            total: session.totalCards,
-        };
-        document.getElementById('resumeInfo').textContent =
-            `Progress: ${progress.completed} / ${progress.total} cards completed`;
-        document.getElementById('resumeModal').classList.remove('hidden');
-        document.getElementById('resumeContinueBtn').onclick = () => {
-            document.getElementById('resumeModal').classList.add('hidden');
-            resumeReview();
-        };
-        document.getElementById('resumeDiscardBtn').onclick = async () => {
-            await discardSession();
-            document.getElementById('resumeModal').classList.add('hidden');
-            updateUI();
-        };
+    if (session && !session.finished) {
+        console.log('🔹 Resuming previous session');
+        resumeReview();
     }
 
     const goalInput = document.getElementById('goalInput');
     if (goalInput) goalInput.value = App.settings.dailyGoal || 20;
+    const goalDisplay = document.getElementById('goalDisplay');
+    if (goalDisplay) goalDisplay.textContent = `Current: ${App.settings.dailyGoal || 20} cards/day.`;
 
     updateUI();
     setupEventListeners();
-}
-
-async function resumeReview() {
-    const session = await loadSession();
-    if (!session) return;
-    const queue = session.queue.map(id => App.cards.find(c => c.id === id)).filter(Boolean);
-    App.isReviewing = true;
-    App.reviewQueue = queue;
-    App.reviewIndex = session.completedIds.length;
-    App.sessionStartTime = Date.now();
-    App.sessionStats = { total: session.completedIds.length, again: 0, hard: 0, good: 0, easy: 0 };
-    document.getElementById('reviewExtra').classList.add('hidden');
-    renderReviewCard();
 }
 
 // ================================================================
@@ -1472,25 +1955,7 @@ function setupEventListeners() {
         btn.addEventListener('click', () => navigateTo(btn.dataset.tab));
     });
 
-    document.querySelectorAll('#sidebar .nav-btn').forEach(btn => {
-        btn.addEventListener('click', () => navigateTo(btn.dataset.tab));
-    });
-
-    document.getElementById('menuBtn').addEventListener('click', () => {
-        document.getElementById('sidebar').classList.toggle('open');
-        document.getElementById('overlay').classList.toggle('show');
-    });
-    document.getElementById('closeMenuBtn').addEventListener('click', () => {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('overlay').classList.remove('show');
-    });
-    document.getElementById('overlay').addEventListener('click', () => {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('overlay').classList.remove('show');
-    });
-
     document.getElementById('themeBtn').addEventListener('click', toggleTheme);
-    document.getElementById('settingsThemeBtn')?.addEventListener('click', toggleTheme);
 
     document.getElementById('createDeckBtn').addEventListener('click', async () => {
         const input = document.getElementById('newDeckInput');
@@ -1504,28 +1969,21 @@ function setupEventListeners() {
         if (e.key === 'Enter') document.getElementById('createDeckBtn').click();
     });
 
-    document.getElementById('startReviewBtn').addEventListener('click', () => {
-        const deckId = document.getElementById('reviewDeckSelect').value;
-        startReview(deckId);
-    });
-    document.getElementById('reviewAllBtn').addEventListener('click', () => {
-        startReview('all');
-    });
     document.getElementById('showBtn').addEventListener('click', showAnswer);
     document.getElementById('againBtn').addEventListener('click', () => rateCard(0));
     document.getElementById('hardBtn').addEventListener('click', () => rateCard(1));
     document.getElementById('goodBtn').addEventListener('click', () => rateCard(2));
     document.getElementById('easyBtn').addEventListener('click', () => rateCard(3));
 
-    document.getElementById('statsDeckSelect').addEventListener('change', renderStatsTab);
-
-    document.getElementById('setGoalBtn').addEventListener('click', setGoal);
-    document.getElementById('settingsExportBtn').addEventListener('click', exportAll);
-    document.getElementById('resetBtn').addEventListener('click', resetAll);
-
-    document.getElementById('quickReviewBtn').addEventListener('click', () => {
-        navigateTo('review');
+    document.getElementById('exitReviewBtn').addEventListener('click', () => {
+        if (confirm('Exit review session? Progress will be saved.')) {
+            exitReviewMode();
+        }
     });
+
+    document.getElementById('statsDeckSelect').addEventListener('change', renderStatsTab);
+    document.getElementById('setGoalBtn').addEventListener('click', setGoal);
+    document.getElementById('exportBtn').addEventListener('click', exportAll);
 
     document.getElementById('searchInput').addEventListener('input', (e) => {
         const query = e.target.value.toLowerCase().trim();
@@ -1540,6 +1998,7 @@ function setupEventListeners() {
         );
         const container = document.getElementById('deckCardList');
         container.style.display = 'block';
+        document.getElementById('deckCardListContainer').style.display = 'block';
         if (filtered.length === 0) {
             container.innerHTML = '<p class="text-muted">No matching cards.</p>';
             return;
@@ -1557,10 +2016,10 @@ function setupEventListeners() {
         }
         html += '</div>';
         container.innerHTML = html;
-        document.getElementById('deckCardListContainer').style.display = 'block';
     });
 
     document.addEventListener('keydown', (e) => {
+        if (!App.isReviewActive) return;
         if (e.key === '1') rateCard(0);
         else if (e.key === '2') rateCard(1);
         else if (e.key === '3') rateCard(2);
@@ -1568,8 +2027,102 @@ function setupEventListeners() {
         else if (e.key === ' ' || e.key === 'Space') {
             e.preventDefault();
             if (!document.getElementById('showBtn').classList.contains('hidden')) showAnswer();
+        } else if (e.key === 'Escape' || e.key === 'Esc') {
+            if (document.getElementById('reviewOverlay').classList.contains('active')) {
+                if (confirm('Exit review session? Progress will be saved.')) {
+                    exitReviewMode();
+                }
+            }
         }
     });
+
+    document.getElementById('toggleCardsBtn').addEventListener('click', () => {
+        const container = document.getElementById('deckCardListContainer');
+        const btn = document.getElementById('toggleCardsBtn');
+        if (container.style.display === 'none' || !container.style.display) {
+            container.style.display = 'block';
+            btn.innerHTML = '<i class="fas fa-chevron-up"></i> Hide Cards';
+            showCardsInDeck(App.currentDeckId);
+        } else {
+            container.style.display = 'none';
+            btn.innerHTML = '<i class="fas fa-list"></i> View Cards';
+        }
+    });
+
+    document.getElementById('hideCardsBtn').addEventListener('click', () => {
+        document.getElementById('deckCardListContainer').style.display = 'none';
+        document.getElementById('toggleCardsBtn').innerHTML = '<i class="fas fa-list"></i> View Cards';
+    });
+
+    document.getElementById('importToDeckBtn').addEventListener('click', () => {
+        if (App.currentDeckId) importToDeck(App.currentDeckId);
+    });
+
+    document.getElementById('addCardToDeckBtn').addEventListener('click', () => {
+        if (App.currentDeckId) addCardToDeck(App.currentDeckId);
+    });
+}
+
+// ================================================================
+//  CARD ACTIONS
+// ================================================================
+
+async function addCardToDeck(deckId) {
+    const front = prompt('Enter question:');
+    if (!front) return;
+    const back = prompt('Enter answer:');
+    if (!back) return;
+    await createCard({ front, back, deckId });
+    updateUI();
+    if (App.currentDeckId === deckId) showCardsInDeck(deckId);
+}
+
+function showCardsInDeck(deckId) {
+    const container = document.getElementById('deckCardList');
+    const filtered = App.cards.filter(c => c.deckId === deckId);
+    if (filtered.length === 0) {
+        container.innerHTML = `<p class="text-muted">No cards in this deck.</p>
+            <button onclick="addCardToDeck('${deckId}')" class="btn-primary" style="margin-top:8px;"><i class="fas fa-plus"></i> Add Card</button>`;
+        return;
+    }
+    let html = `<h4>${getLocalName(App.decks.find(d => d.id === deckId)?.name)} (${filtered.length} cards)</h4>
+        <button onclick="addCardToDeck('${deckId}')" class="btn-primary" style="font-size:0.8rem;margin-bottom:8px;"><i class="fas fa-plus"></i> Add Card</button>
+        <div style="max-height:300px;overflow-y:auto;">`;
+    for (const c of filtered) {
+        const tags = c.tags && c.tags.length ? c.tags.map(t => `#${t}`).join(' ') : '';
+        const color = getCardColor(c);
+        const colorEmoji = color === 'blue' ? '🔵' : color === 'red' ? '🔴' : color === 'green' ? '🟢' : '⚪';
+        html += `<div class="card-entry">
+            <span class="card-text">${colorEmoji} <span class="front">${c.front}</span> → <span class="back">${c.back}</span> ${tags ? `<span class="card-tags">${tags}</span>` : ''}</span>
+            <div class="actions">
+                <button onclick="editCardAction('${c.id}')"><i class="fas fa-edit"></i></button>
+                <button onclick="deleteCardAction('${c.id}')"><i class="fas fa-trash"></i></button>
+            </div>
+        </div>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+async function editCardAction(cardId) {
+    const card = getCard(cardId);
+    if (!card) return;
+    const front = prompt('Edit question:', card.front);
+    if (front !== null) card.front = front;
+    const back = prompt('Edit answer:', card.back);
+    if (back !== null) card.back = back;
+    await updateCard(card);
+    const deckId = card.deckId;
+    if (deckId && App.currentDeckId === deckId) showCardsInDeck(deckId);
+    updateUI();
+}
+
+async function deleteCardAction(cardId) {
+    if (!confirm('Delete this card?')) return;
+    const card = getCard(cardId);
+    await deleteCard(cardId);
+    if (card && App.currentDeckId === card.deckId) showCardsInDeck(card.deckId);
+    updateUI();
 }
 
 // ================================================================
