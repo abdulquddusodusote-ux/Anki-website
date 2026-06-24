@@ -317,6 +317,97 @@ function getCardColor(card) {
 //  SCHEDULER (SM-2)
 // ================================================================
 
+// ----------------------------------------------------------------
+//  previewIntervals(card) — returns what each button will show
+//  Called by showAnswer() to compute dynamic button labels.
+//  Matches AnkiDroid/Anki behavior exactly:
+//
+//  Learning phase (new/learning/relearning):
+//    Again  → learningSteps[0] minutes  (always reset to step 0)
+//    Hard   → if on step 0: average of steps[0] and steps[1]
+//              if on any other step: repeat current step
+//    Good   → if not on last step: next step duration
+//              if on last step: graduating interval (days)
+//    Easy   → easyInterval (days) — NEVER changes during learning
+//
+//  Review phase:
+//    Again  → relearning step (10m default)
+//    Hard   → interval * 0.8 days (min 1)
+//    Good   → interval * ease days
+//    Easy   → interval * ease * easyBonus days
+// ----------------------------------------------------------------
+
+function previewIntervals(card) {
+    const s = App.settings;
+    const learningSteps = s.learningSteps || [1, 6, 10]; // minutes
+    const cardState = card.state || 'new'; // use raw card state, not abstracted
+    const reps = card.reps || 0;
+
+    // ---- New and Learning cards ----
+    if (cardState === 'new' || cardState === 'learning') {
+        const stepIndex = Math.min(reps, learningSteps.length - 1);
+
+        // Again: always reset to step 0
+        const againMins = learningSteps[0];
+
+        // Hard: step 0 → average of step[0]+step[1]; other steps → repeat current
+        let hardMins;
+        if (learningSteps.length === 1) {
+            hardMins = learningSteps[0] * 1.5;
+        } else if (stepIndex === 0) {
+            hardMins = (learningSteps[0] + learningSteps[1]) / 2;
+        } else {
+            hardMins = learningSteps[stepIndex];
+        }
+
+        // Good: advance to next step, or graduate
+        let goodLabel;
+        if (stepIndex < learningSteps.length - 1) {
+            goodLabel = `<${Math.round(learningSteps[stepIndex + 1])}m Good`;
+        } else {
+            goodLabel = `${s.graduatingInterval || 1}d Good`;
+        }
+
+        // Easy: ALWAYS fixed easyInterval — never changes during learning phase
+        const easyDays = s.easyInterval || 4;
+
+        return {
+            again: `<${Math.round(againMins)}m Again`,
+            hard:  `<${Math.round(hardMins)}m Hard`,
+            good:  goodLabel,
+            easy:  `${easyDays}d Easy`,
+        };
+    }
+
+    // ---- Relearning cards (lapsed review cards in relearning phase) ----
+    if (cardState === 'relearning') {
+        // Single 10-minute relearning step by default
+        const relearningStep = 10;
+        // Good on the only relearning step → re-graduate
+        const prevInterval = card.interval || 1;
+        const reGradInterval = Math.max(1, Math.round(prevInterval * 0.5));
+        return {
+            again: `<${relearningStep}m Again`,
+            hard:  `<${relearningStep}m Hard`,
+            good:  `${reGradInterval}d Good`,
+            easy:  `${reGradInterval}d Easy`,
+        };
+    }
+
+    // ---- Review cards ----
+    const interval = card.interval || 1;
+    const ease = card.ease || 2.5;
+    const hardDays = Math.max(1, Math.round(interval * 0.8));
+    const goodDays = Math.max(hardDays + 1, Math.round(interval * ease));
+    const easyDays = Math.max(goodDays + 1, Math.round(interval * ease * (s.easyBonus || 1.3)));
+    return {
+        again: '10m Again',
+        hard:  `${hardDays}d Hard`,
+        good:  `${goodDays}d Good`,
+        easy:  `${easyDays}d Easy`,
+    };
+}
+
 function scheduleCard(card, rating) {
     const s = App.settings;
     let { interval, ease, reps, state, lapses } = card;
@@ -329,42 +420,87 @@ function scheduleCard(card, rating) {
     const now = new Date();
     const learningSteps = s.learningSteps || [1, 6, 10]; // minutes
 
-    if (state === 'new' || state === 'learning' || state === 'relearning') {
+    // ---- RELEARNING (lapsed review card) ----
+    // Separate from learning because it uses its own single 10-minute step
+    // and re-graduates at 50% of the previous interval.
+    if (state === 'relearning') {
+        const relearningStep = 10; // 10 minutes
+        if (rating === 0) {
+            // Again — stay in relearning
+            lapses++;
+            reps = 0;
+            interval = relearningStep / (24 * 60);
+            ease = Math.max(1.3, ease - 0.2);
+        } else if (rating === 1) {
+            // Hard — repeat the relearning step
+            interval = relearningStep / (24 * 60);
+        } else if (rating === 2) {
+            // Good — re-graduate at 50% of previous interval
+            state = 'review';
+            interval = Math.max(1, Math.round(interval * 0.5));
+            reps++;
+        } else if (rating === 3) {
+            // Easy — re-graduate at 50% of previous interval
+            state = 'review';
+            interval = Math.max(1, Math.round(interval * 0.5));
+            reps++;
+        }
+        if (!interval || interval < 1 / (24 * 60)) interval = 1 / (24 * 60);
+        const due = new Date(now.getTime() + interval * 24 * 60 * 60 * 1000);
+        return { state, interval, ease, reps, lapses, due: due.toISOString() };
+    }
+
+    // ---- NEW / LEARNING ----
+    if (state === 'new' || state === 'learning') {
         const stepIndex = Math.min(reps, learningSteps.length - 1);
-        const step = learningSteps[stepIndex]; // in minutes
 
         if (rating === 0) {
-            // Again — go back to first step
+            // Again — reset to step 0
+            // NOTE: Anki does NOT penalize ease during the learning phase.
+            // "New cards have no ease, so no matter how many times you press
+            // Again or Hard, the future ease factor won't be affected."
+            //  — https://faqs.ankiweb.net/what-spaced-repetition-algorithm
             lapses++;
-            interval = learningSteps[0] / (24 * 60); // convert minutes to days
             reps = 0;
-            ease = Math.max(1.3, ease - 0.2);
-            // state stays 'learning' (or 'relearning' if it was)
+            interval = learningSteps[0] / (24 * 60); // minutes → days
             if (state === 'new') state = 'learning';
+            // ease unchanged during learning
+
         } else if (rating === 1) {
-            // Hard — stay on current step
-            interval = step / (24 * 60);
-            reps = Math.max(1, reps); // don't advance
+            // Hard:
+            //   step 0 → average of step[0] and step[1]
+            //   other  → repeat current step
+            let hardMins;
+            if (learningSteps.length === 1) {
+                hardMins = learningSteps[0] * 1.5;
+            } else if (stepIndex === 0) {
+                hardMins = (learningSteps[0] + learningSteps[1]) / 2;
+            } else {
+                hardMins = learningSteps[stepIndex];
+            }
+            interval = hardMins / (24 * 60);
+            // reps stays the same (Hard does not advance the step)
             if (state === 'new') state = 'learning';
+            // ease unchanged during learning
+
         } else if (rating === 2) {
             // Good — advance to next step or graduate
-            if (reps < learningSteps.length - 1) {
-                reps++;
-                const nextStep = learningSteps[reps];
-                interval = nextStep / (24 * 60);
+            if (stepIndex < learningSteps.length - 1) {
+                reps = stepIndex + 1;
+                interval = learningSteps[reps] / (24 * 60);
                 if (state === 'new') state = 'learning';
             } else {
-                // Graduate to review
+                // Passed final step → graduate
                 state = 'review';
                 interval = s.graduatingInterval || 1;
                 reps = learningSteps.length;
             }
+
         } else if (rating === 3) {
-            // Easy — graduate immediately
+            // Easy — graduate immediately; ease unchanged per official docs
             state = 'review';
             interval = s.easyInterval || 4;
             reps = learningSteps.length;
-            ease = Math.min(ease + 0.15, 10);
         }
 
         if (!interval || interval < 1 / (24 * 60)) interval = 1 / (24 * 60);
@@ -1185,23 +1321,12 @@ function showAnswer() {
     document.getElementById('goodBtn').classList.remove('hidden');
     document.getElementById('easyBtn').classList.remove('hidden');
 
-    const state = getCardState(card);
-    if (state === 'new' || state === 'learning' || state === 'relearning') {
-        document.getElementById('againBtn').textContent = '<1m Again';
-        document.getElementById('hardBtn').textContent = '<6m Hard';
-        document.getElementById('goodBtn').textContent = '<10m Good';
-        document.getElementById('easyBtn').textContent = '4d Easy';
-    } else {
-        const interval = card.interval || 1;
-        const ease = card.ease || 2.5;
-        const easyInterval = Math.round(interval * ease * 1.3);
-        const goodInterval = Math.round(interval * ease);
-        const hardInterval = Math.max(1, Math.round(interval * 0.8));
-        document.getElementById('againBtn').textContent = '10m Again';
-        document.getElementById('hardBtn').textContent = `${hardInterval}d Hard`;
-        document.getElementById('goodBtn').textContent = `${goodInterval}d Good`;
-        document.getElementById('easyBtn').textContent = `${easyInterval}d Easy`;
-    }
+    // Compute dynamic button labels based on card's current step/state
+    const preview = previewIntervals(card);
+    document.getElementById('againBtn').textContent = preview.again;
+    document.getElementById('hardBtn').textContent  = preview.hard;
+    document.getElementById('goodBtn').textContent  = preview.good;
+    document.getElementById('easyBtn').textContent  = preview.easy;
 }
 
 // ================================================================
