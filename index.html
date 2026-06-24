@@ -76,7 +76,7 @@
             </div>
 
             <div class="search-area">
-                <input id="searchInput" placeholder="🔍 Search cards, decks, tags...">
+                <input id="searchInput" placeholder=" Search cards, decks, tags...">
             </div>
             <input type="file" id="importFileInput" accept=".csv,.txt" style="display:none;">
         </section>
@@ -89,10 +89,10 @@
                 <button id="exportBtn" class="btn-success" style="margin-left:auto;"><i class="fas fa-download"></i> Export</button>
             </div>
             <div class="stats-grid">
-                <div class="card-panel"><h4>📊 Retention</h4><div id="statsRetention">Select a deck.</div></div>
-                <div class="card-panel"><h4>📈 Readiness</h4><div id="statsReadiness">Select a deck.</div></div>
-                <div class="card-panel"><h4>📋 Maturity</h4><div id="statsMaturity">Select a deck.</div></div>
-                <div class="card-panel"><h4>📅 Due Distribution</h4><div id="statsDueDist">Select a deck.</div></div>
+                <div class="card-panel"><h4> Retention</h4><div id="statsRetention">Select a deck.</div></div>
+                <div class="card-panel"><h4> Readiness</h4><div id="statsReadiness">Select a deck.</div></div>
+                <div class="card-panel"><h4> Maturity</h4><div id="statsMaturity">Select a deck.</div></div>
+                <div class="card-panel"><h4> Due Distribution</h4><div id="statsDueDist">Select a deck.</div></div>
                 <div class="card-panel" style="grid-column:span 2;">
                     <h3><i class="fas fa-lightbulb"></i> Insights</h3>
                     <div id="insightsContainer"></div>
@@ -113,7 +113,7 @@
             <div class="card-panel" style="max-width:800px; margin:0 auto;">
                 <h2><i class="fas fa-question-circle" style="color:var(--primary);"></i> Help &amp; User Guide</h2>
                 <hr style="margin:12px 0; border-color:var(--border);">
-                <h3>📖 Navigation</h3>
+                <h3> Navigation</h3>
                 <p>Use the bottom navigation to switch between sections.</p>
                 <ul>
                     <li><strong>Dashboard</strong> – Overview of your progress, streaks, study time, and goals.</li>
@@ -122,19 +122,19 @@
                     <li><strong>Help</strong> – This page.</li>
                 </ul>
                 <hr style="margin:16px 0; border-color:var(--border);">
-                <h3>📂 Decks &amp; Subdecks</h3>
+                <h3> Decks &amp; Subdecks</h3>
                 <ul>
                     <li><strong>Create a deck:</strong> Type a name (e.g., <code>Science::Biology</code>) and click <strong>Create</strong>.</li>
-                    <li><strong>Expand/collapse:</strong> Click the <strong>▶/▼</strong> arrow next to a deck.</li>
+                    <li><strong>Expand/collapse:</strong> Click the <strong>/</strong> arrow next to a deck.</li>
                     <li><strong>Start reviewing:</strong> <strong>Single tap</strong> any deck to start reviewing its due cards. Or <strong>long press</strong> and select <strong>"Review Cards"</strong>.</li>
                     <li><strong>Long press (or right-click) on a deck</strong> to see: Create Subdeck, Rename, Delete, Import, Review Cards.</li>
                     <li><strong>View cards:</strong> Select a deck, click <strong>"View Cards"</strong>.</li>
-                    <li><strong>Import cards:</strong> Long press a deck → Import.</li>
-                    <li><strong>Add a card:</strong> Select a deck → Add Card.</li>
-                    <li><strong>Delete a deck:</strong> Long press a deck → Delete.</li>
+                    <li><strong>Import cards:</strong> Long press a deck  Import.</li>
+                    <li><strong>Add a card:</strong> Select a deck  Add Card.</li>
+                    <li><strong>Delete a deck:</strong> Long press a deck  Delete.</li>
                 </ul>
                 <hr style="margin:16px 0; border-color:var(--border);">
-                <h3>🎮 Review Mode</h3>
+                <h3> Review Mode</h3>
                 <ul>
                     <li><strong>Single tap</strong> any deck to start reviewing its due cards.</li>
                     <li>The screen becomes full-screen — only the card is visible.</li>
@@ -146,14 +146,14 @@
                     <li><strong>Exit:</strong> Tap the back arrow or press <kbd>Esc</kbd>.</li>
                 </ul>
                 <hr style="margin:16px 0; border-color:var(--border);">
-                <h3>🔥 Streaks</h3>
+                <h3> Streaks</h3>
                 <ul>
                     <li><strong>Daily streak:</strong> Increases each day you review at least 1 card. Resets if you skip a day.</li>
                     <li><strong>Goal streak:</strong> Increases each day you meet your daily card goal. Resets if you miss the goal or skip a day.</li>
                     <li>Streaks are checked when you rate your first card of each new day.</li>
                 </ul>
                 <hr style="margin:16px 0; border-color:var(--border);">
-                <h3>⌨️ Keyboard Shortcuts</h3>
+                <h3> Keyboard Shortcuts</h3>
                 <ul>
                     <li><kbd>1</kbd> – Again</li>
                     <li><kbd>2</kbd> – Hard</li>
@@ -163,7 +163,7 @@
                     <li><kbd>Esc</kbd> – Exit review</li>
                 </ul>
                 <hr style="margin:16px 0; border-color:var(--border);">
-                <h3>❓ Troubleshooting</h3>
+                <h3> Troubleshooting</h3>
                 <ul>
                     <li><strong>No cards due?</strong> Add more cards or wait for intervals to expire.</li>
                     <li><strong>Import not working?</strong> Ensure your file is <code>Question;Answer</code> (semicolon only).</li>
@@ -195,7 +195,7 @@
             </span>
         </div>
         <span id="reviewProgressText">0 / 0</span>
-        <span id="reviewTimerDisplay">⏱️ 00:00</span>
+        <span id="reviewTimerDisplay"> 00:00</span>
     </div>
     <div id="reviewContainer" class="review-container">
         <div id="cardDisplay" class="card-box">
@@ -205,7 +205,7 @@
         </div>
         <!-- Waiting screen shown when all due cards are done but learning cards still pending -->
         <div id="waitingScreen" class="waiting-screen hidden">
-            <div class="waiting-icon">⏳</div>
+            <div class="waiting-icon"></div>
             <div id="waitingMessage" class="waiting-message">Next card ready soon...</div>
             <div id="waitingCountdown" class="waiting-countdown"></div>
         </div>
