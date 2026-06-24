@@ -10,7 +10,6 @@
 <body>
 
 <div id="app">
-    <!-- TOP BAR -->
     <header id="topbar">
         <h1>FlashCoach</h1>
         <div class="topbar-right">
@@ -19,10 +18,8 @@
         </div>
     </header>
 
-    <!-- MAIN CONTENT -->
     <main id="main">
-
-        <!-- ======== DASHBOARD ======== -->
+        <!-- DASHBOARD -->
         <section id="dashboard" class="tab active">
             <div class="stat-strip" id="statStrip"></div>
             <div class="dashboard-grid">
@@ -39,7 +36,7 @@
                             <div style="font-size:1.6rem;font-weight:700;color:var(--primary);" id="dailyStreakDisplay">0 days</div>
                         </div>
                         <div>
-                            <div style="font-size:0.7rem;color:var(--text-muted);">Goal (20/day)</div>
+                            <div style="font-size:0.7rem;color:var(--text-muted);">Goal (<span id="goalLabel">20</span>/day)</div>
                             <div style="font-size:1.6rem;font-weight:700;color:var(--accent);" id="goalStreakDisplay">0 days</div>
                         </div>
                     </div>
@@ -55,7 +52,7 @@
             </div>
         </section>
 
-        <!-- ======== DECKS ======== -->
+        <!-- DECKS -->
         <section id="decks" class="tab">
             <div class="deck-controls">
                 <input id="newDeckInput" placeholder="New deck (e.g. Science::Biology)">
@@ -63,7 +60,6 @@
             </div>
             <div id="deckTreeContainer" class="deck-tree"></div>
 
-            <!-- Selected Deck Info -->
             <div id="selectedDeckInfo" style="display:none; margin-top:12px; padding:12px; background:var(--surface); border-radius:var(--radius); border:1px solid var(--border);">
                 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span id="selectedDeckName"></span>
@@ -85,7 +81,7 @@
             <input type="file" id="importFileInput" accept=".csv,.txt" style="display:none;">
         </section>
 
-        <!-- ======== STATISTICS ======== -->
+        <!-- STATISTICS -->
         <section id="stats" class="tab">
             <div class="stats-controls">
                 <label for="statsDeckSelect">Deck:</label>
@@ -112,12 +108,11 @@
             </div>
         </section>
 
-        <!-- ======== HELP ======== -->
+        <!-- HELP -->
         <section id="help" class="tab">
             <div class="card-panel" style="max-width:800px; margin:0 auto;">
-                <h2><i class="fas fa-question-circle" style="color:var(--primary);"></i> Help & User Guide</h2>
+                <h2><i class="fas fa-question-circle" style="color:var(--primary);"></i> Help &amp; User Guide</h2>
                 <hr style="margin:12px 0; border-color:var(--border);">
-
                 <h3>📖 Navigation</h3>
                 <p>Use the bottom navigation to switch between sections.</p>
                 <ul>
@@ -126,68 +121,38 @@
                     <li><strong>Statistics</strong> – Detailed analytics for each deck.</li>
                     <li><strong>Help</strong> – This page.</li>
                 </ul>
-
                 <hr style="margin:16px 0; border-color:var(--border);">
-
-                <h3>📂 Decks & Subdecks</h3>
+                <h3>📂 Decks &amp; Subdecks</h3>
                 <ul>
-                    <li><strong>Create a deck:</strong> Type a name (e.g., <code>Science::Biology</code>) and click <strong>Create</strong>. The <code>::</code> creates subdecks.</li>
+                    <li><strong>Create a deck:</strong> Type a name (e.g., <code>Science::Biology</code>) and click <strong>Create</strong>.</li>
                     <li><strong>Expand/collapse:</strong> Click the <strong>▶/▼</strong> arrow next to a deck.</li>
-                    <li><strong>Start reviewing:</strong> <strong>Single tap</strong> any deck to start reviewing its due cards.</li>
-                    <li><strong>Long press (or right-click) on a deck</strong> to see: Create Subdeck, Rename, Delete, Import.</li>
+                    <li><strong>Start reviewing:</strong> <strong>Single tap</strong> any deck to start reviewing its due cards. Or <strong>long press</strong> and select <strong>"Review Cards"</strong>.</li>
+                    <li><strong>Long press (or right-click) on a deck</strong> to see: Create Subdeck, Rename, Delete, Import, Review Cards.</li>
                     <li><strong>View cards:</strong> Select a deck, click <strong>"View Cards"</strong>.</li>
-                    <li><strong>Import cards:</strong> Long press a deck → Import, or select a deck → Import button.</li>
+                    <li><strong>Import cards:</strong> Long press a deck → Import.</li>
                     <li><strong>Add a card:</strong> Select a deck → Add Card.</li>
                     <li><strong>Delete a deck:</strong> Long press a deck → Delete.</li>
                 </ul>
-
                 <hr style="margin:16px 0; border-color:var(--border);">
-
                 <h3>🎮 Review Mode</h3>
                 <ul>
                     <li><strong>Single tap</strong> any deck to start reviewing its due cards.</li>
                     <li>The screen becomes full-screen — only the card is visible.</li>
+                    <li><strong>Blue</strong> = New cards · <strong>Red</strong> = Learning cards (will come back this session) · <strong>Green</strong> = Cards due for review.</li>
                     <li>Tap <strong>"Show Answer"</strong> to reveal the back.</li>
                     <li><strong>Rate your recall:</strong> Choose <strong>Again, Hard, Good, or Easy</strong>.</li>
-                    <li><strong>Learning cards</strong> (Red) will interrupt your review when their interval is up.</li>
+                    <li><strong>Learning cards (Red)</strong> stay in the session and come back automatically when their interval is up.</li>
                     <li><strong>You can leave anytime</strong> — your progress is automatically saved.</li>
-                    <li><strong>Timer</strong> only counts when you're actively reviewing.</li>
                     <li><strong>Exit:</strong> Tap the back arrow or press <kbd>Esc</kbd>.</li>
                 </ul>
-
                 <hr style="margin:16px 0; border-color:var(--border);">
-
-                <h3>📊 Statistics</h3>
+                <h3>🔥 Streaks</h3>
                 <ul>
-                    <li><strong>Select a deck</strong> from the dropdown to see its stats.</li>
-                    <li><strong>Retention:</strong> % of "Good" or "Easy" ratings in the last 30 days.</li>
-                    <li><strong>Exam Readiness:</strong> Score out of 100 based on maturity, retention, and coverage.</li>
-                    <li><strong>Maturity:</strong> New / Learning / Review / Suspended card counts.</li>
-                    <li><strong>Due Distribution:</strong> Bar chart showing cards due in the next 7 days.</li>
-                    <li><strong>Export:</strong> Click <strong>"Export"</strong> to download all cards as <code>Question;Answer</code>.</li>
+                    <li><strong>Daily streak:</strong> Increases each day you review at least 1 card. Resets if you skip a day.</li>
+                    <li><strong>Goal streak:</strong> Increases each day you meet your daily card goal. Resets if you miss the goal or skip a day.</li>
+                    <li>Streaks are checked when you rate your first card of each new day.</li>
                 </ul>
-
                 <hr style="margin:16px 0; border-color:var(--border);">
-
-                <h3>📈 Dashboard</h3>
-                <ul>
-                    <li><strong>Stat strip:</strong> Total cards, due today, retention %, streaks, study time.</li>
-                    <li><strong>Study Time:</strong> Tracks time spent reviewing today, this week, and this month.</li>
-                    <li><strong>Streaks:</strong> Two streaks — daily (any review) and goal (meeting your daily goal).</li>
-                    <li><strong>Weakest Topic:</strong> The deck with the lowest retention.</li>
-                    <li><strong>Smart Goal:</strong> Recommends daily reviews to clear backlog in 7 or 14 days.</li>
-                </ul>
-
-                <hr style="margin:16px 0; border-color:var(--border);">
-
-                <h3>🎨 Theme & Settings</h3>
-                <ul>
-                    <li><strong>Dark/Light mode:</strong> Toggle with the <strong>🌙/☀</strong> button in the top-right (persists across sessions).</li>
-                    <li><strong>Daily Goal:</strong> Set in the <strong>Statistics</strong> tab.</li>
-                </ul>
-
-                <hr style="margin:16px 0; border-color:var(--border);">
-
                 <h3>⌨️ Keyboard Shortcuts</h3>
                 <ul>
                     <li><kbd>1</kbd> – Again</li>
@@ -197,9 +162,7 @@
                     <li><kbd>Space</kbd> – Show Answer</li>
                     <li><kbd>Esc</kbd> – Exit review</li>
                 </ul>
-
                 <hr style="margin:16px 0; border-color:var(--border);">
-
                 <h3>❓ Troubleshooting</h3>
                 <ul>
                     <li><strong>No cards due?</strong> Add more cards or wait for intervals to expire.</li>
@@ -209,10 +172,8 @@
                 </ul>
             </div>
         </section>
-
     </main>
 
-    <!-- BOTTOM NAV -->
     <nav id="bottomNav">
         <button class="nav-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i><span>Home</span></button>
         <button class="nav-btn" data-tab="decks"><i class="fas fa-layer-group"></i><span>Decks</span></button>
@@ -221,10 +182,18 @@
     </nav>
 </div>
 
-<!-- REVIEW OVERLAY (hidden, only appears when tapping a deck) -->
-<div id="reviewOverlay" class="review-overlay hidden">
+<!-- REVIEW OVERLAY -->
+<div id="reviewOverlay" class="review-overlay">
     <div class="review-topbar">
         <button id="exitReviewBtn" class="icon-btn"><i class="fas fa-arrow-left"></i> Exit</button>
+        <div class="review-deck-info">
+            <span id="reviewDeckName" class="review-deck-name"></span>
+            <span id="reviewColorCounts" class="review-color-counts">
+                <span class="color-badge blue"><span id="reviewBlueCount">0</span></span>
+                <span class="color-badge red"><span id="reviewRedCount">0</span></span>
+                <span class="color-badge green"><span id="reviewGreenCount">0</span></span>
+            </span>
+        </div>
         <span id="reviewProgressText">0 / 0</span>
         <span id="reviewTimerDisplay">⏱️ 00:00</span>
     </div>
@@ -234,23 +203,17 @@
             <div id="reviewAnswer" class="review-answer"></div>
             <button id="showBtn" class="btn-show"><i class="fas fa-eye"></i> Show Answer</button>
         </div>
+        <!-- Waiting screen shown when all due cards are done but learning cards still pending -->
+        <div id="waitingScreen" class="waiting-screen hidden">
+            <div class="waiting-icon">⏳</div>
+            <div id="waitingMessage" class="waiting-message">Next card ready soon...</div>
+            <div id="waitingCountdown" class="waiting-countdown"></div>
+        </div>
         <div id="reviewButtons" class="review-buttons">
             <button id="againBtn" class="btn-again hidden">&lt;1m Again</button>
             <button id="hardBtn" class="btn-hard hidden">&lt;6m Hard</button>
             <button id="goodBtn" class="btn-good hidden">&lt;10m Good</button>
             <button id="easyBtn" class="btn-easy hidden">4d Easy</button>
-        </div>
-    </div>
-</div>
-
-<!-- RESUME MODAL -->
-<div id="resumeModal" class="modal hidden">
-    <div class="modal-content">
-        <h3>Resume Previous Session?</h3>
-        <p id="resumeInfo">Progress: 0 / 0</p>
-        <div class="modal-buttons">
-            <button id="resumeContinueBtn" class="btn-primary">Continue</button>
-            <button id="resumeDiscardBtn" class="btn-danger">Discard</button>
         </div>
     </div>
 </div>
