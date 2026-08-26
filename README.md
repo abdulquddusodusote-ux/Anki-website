@@ -1,2 +1,0 @@
-# Anki-website
-Flashcards 
