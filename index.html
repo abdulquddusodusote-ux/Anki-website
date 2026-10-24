@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3b5bdb">
+<title>FlashCoach</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+  <header id="topbar">
+    <div class="brand"><i class="fas fa-layer-group"></i><span>FlashCoach</span></div>
+    <div class="top-actions">
+      <button id="quizChip" class="quiz-chip hidden" title="Days until your quiz"></button>
+      <button id="addBtn" class="btn-primary sm"><i class="fas fa-plus"></i><span>Add</span></button>
+      <button id="themeBtn" class="icon-btn" title="Dark / light"><i class="fas fa-moon"></i></button>
+    </div>
+  </header>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <main id="main">
+    <!-- DECKS -->
+    <section id="tab-decks" class="tab active">
+      <div id="backupBanner" class="banner hidden"></div>
+      <div class="deck-table">
+        <div class="deck-head"><span>Deck</span><span class="c-new">New</span><span class="c-learn">Learn</span><span class="c-due">Due</span></div>
+        <div id="deckList"></div>
+      </div>
+      <div id="emptyDecks" class="empty hidden">
+        <i class="fas fa-folder-open"></i>
+        <h3>No decks yet</h3>
+        <p>Create a deck to start adding cards.</p>
+      </div>
+      <div class="deck-footer">
+        <button id="createDeckBtn" class="btn-secondary"><i class="fas fa-folder-plus"></i> Create deck</button>
+        <button id="importGoBtn" class="btn-secondary"><i class="fas fa-file-import"></i> Import cards</button>
+      </div>
+    </section>
+
+    <!-- BROWSE -->
+    <section id="tab-browse" class="tab">
+      <div class="search-row">
+        <div class="search-box">
+          <i class="fas fa-search"></i>
+          <input id="bSearch" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search cards…  e.g. deck:anatomy is:due tag:heart">
+          <button id="bClear" class="clear-btn hidden" aria-label="Clear search"><i class="fas fa-times"></i></button>
+        </div>
+      </div>
+      <div class="filter-row">
+        <select id="bDeck" class="select"></select>
+        <select id="bSort" class="select">
+          <option value="created">Created</option>
+          <option value="modified">Modified</option>
+          <option value="due">Due date</option>
+          <option value="interval">Interval</option>
+          <option value="ease">Ease</option>
+          <option value="lapses">Lapses</option>
+          <option value="front">Question A–Z</option>
+        </select>
+        <button id="bOrder" class="icon-btn bordered" title="Reverse order"><i class="fas fa-arrow-down-wide-short"></i></button>
+      </div>
+      <div class="count-row">
+        <span id="bCount">0 cards</span>
+        <button id="bSelectBtn" class="link-btn">Select</button>
+      </div>
+      <div id="bList" class="b-list"></div>
+      <button id="bMore" class="btn-secondary full hidden">Show more</button>
+      <div id="bulkBar" class="bulk-bar hidden">
+        <span id="bulkCount">0 selected</span>
+        <div class="bulk-actions">
+          <button data-bulk="all" title="Select all results"><i class="fas fa-check-double"></i></button>
+          <button data-bulk="move" title="Move to deck"><i class="fas fa-folder-tree"></i></button>
+          <button data-bulk="tag" title="Add tag"><i class="fas fa-tag"></i></button>
+          <button data-bulk="suspend" title="Suspend"><i class="fas fa-pause"></i></button>
+          <button data-bulk="unsuspend" title="Unsuspend"><i class="fas fa-play"></i></button>
+          <button data-bulk="delete" title="Delete" class="danger"><i class="fas fa-trash"></i></button>
+          <button data-bulk="cancel" title="Done"><i class="fas fa-times"></i></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section id="tab-stats" class="tab"><div id="statsRoot"></div></section>
+
+    <!-- IMPORT -->
+    <section id="tab-import" class="tab">
+      <div class="panel">
+        <h2 class="panel-title">Import cards</h2>
+        <p class="muted small">Choose a file or paste text. Each line is one card; the separator splits the fields.</p>
+
+        <div class="form-group">
+          <label>1. File or pasted text</label>
+          <div class="row-gap">
+            <button id="impChoose" class="btn-secondary"><i class="fas fa-file-arrow-up"></i> Choose file</button>
+            <span id="impFileName" class="muted small">.csv .txt .tsv</span>
+          </div>
+          <textarea id="impText" class="textarea" rows="4" placeholder="Or paste here, e.g.&#10;What is the normal adult heart rate?;60–100 bpm;cardio"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="impSep">2. Field separator</label>
+          <div class="row-gap">
+            <select id="impSep" class="select">
+              <option value=";" selected>Semicolon ( ; )</option>
+              <option value=",">Comma ( , )</option>
+              <option value="\t">Tab</option>
+              <option value="|">Pipe ( | )</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input id="impCustom" class="input short hidden" type="text" maxlength="3" placeholder="e.g. ::">
+          </div>
+          <label class="check"><input id="impHeader" type="checkbox"> First line is a header (skip it)</label>
+        </div>
+
+        <div class="form-group">
+          <label>3. What each column is</label>
+          <div class="map-grid">
+            <div><span class="muted small">Column 1</span><select id="impMapF" class="select"></select></div>
+            <div><span class="muted small">Column 2</span><select id="impMapB" class="select"></select></div>
+            <div><span class="muted small">Column 3</span><select id="impMapT" class="select"></select></div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="impDeck">4. Add to deck</label>
+          <select id="impDeck" class="select full"></select>
+          <input id="impNewDeck" class="input full mt" type="text" placeholder="…or type a new deck name (e.g. Medicine::Cardiology)">
+          <label class="check"><input id="impSkipDup" type="checkbox" checked> Skip cards whose question already exists in that deck</label>
+        </div>
+
+        <div id="impWarn" class="warn hidden"></div>
+        <div id="impPreview" class="imp-preview"></div>
+        <button id="impRun" class="btn-primary full" disabled><i class="fas fa-file-import"></i> Import</button>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab"><div id="settingsRoot"></div></section>
+  </main>
+
+  <nav id="bottomNav">
+    <button class="nav-btn active" data-tab="decks"><i class="fas fa-layer-group"></i><span>Decks</span></button>
+    <button class="nav-btn" data-tab="browse"><i class="fas fa-magnifying-glass"></i><span>Browse</span></button>
+    <button class="nav-btn" data-tab="stats"><i class="fas fa-chart-simple"></i><span>Activity</span></button>
+    <button class="nav-btn" data-tab="import"><i class="fas fa-file-import"></i><span>Import</span></button>
+    <button class="nav-btn" data-tab="settings"><i class="fas fa-sliders"></i><span>Settings</span></button>
+  </nav>
+</div>
+
+<!-- ================= REVIEW ================= -->
+<div id="reviewOverlay" class="review-overlay">
+  <div class="rv-top">
+    <button id="rvExit" class="icon-btn" title="Exit (Esc)"><i class="fas fa-arrow-left"></i></button>
+    <div class="rv-center">
+      <div id="rvDeck" class="rv-deck">Deck</div>
+      <div class="rv-counts">
+        <span id="rvNew" class="rv-n new">0</span>
+        <span id="rvLearn" class="rv-n learn">0</span>
+        <span id="rvDue" class="rv-n due">0</span>
+      </div>
+    </div>
+    <div class="rv-right">
+      <button id="rvUndo" class="icon-btn" title="Undo (Ctrl+Z)" disabled><i class="fas fa-rotate-left"></i></button>
+      <button id="rvMenuBtn" class="icon-btn" title="Card options"><i class="fas fa-ellipsis-vertical"></i></button>
+    </div>
+  </div>
+
+  <div id="rvMenu" class="rv-menu hidden">
+    <button data-rm="edit"><i class="fas fa-pen"></i> Edit card</button>
+    <div class="rv-flags">
+      <button data-rm="flag1" class="f1"></button><button data-rm="flag2" class="f2"></button>
+      <button data-rm="flag3" class="f3"></button><button data-rm="flag4" class="f4"></button>
+      <button data-rm="flag0" class="f0" title="Clear flag"><i class="fas fa-ban"></i></button>
+    </div>
+    <button data-rm="suspend"><i class="fas fa-pause"></i> Suspend card</button>
+    <button data-rm="bury"><i class="fas fa-moon"></i> Bury until tomorrow</button>
+    <button data-rm="delete" class="danger"><i class="fas fa-trash"></i> Delete card</button>
+  </div>
+
+  <div id="rvBody" class="rv-body">
+    <div id="rvCard" class="rv-card">
+      <span id="rvFlag" class="rv-flag"></span>
+      <div id="rvQ" class="rv-q"></div>
+      <hr id="rvDiv" class="rv-div hidden">
+      <div id="rvA" class="rv-a hidden"></div>
+    </div>
+    <div id="rvFinish" class="rv-finish hidden"></div>
+  </div>
+
+  <div class="rv-bottom">
+    <div class="rv-stat" id="rvDone">0 reviewed</div>
+    <button id="rvShow" class="btn-show">Show answer</button>
+    <div id="rvRates" class="rv-rates hidden">
+      <button class="rate again" data-r="0"><small data-iv="0"></small><b>Again</b></button>
+      <button class="rate hard" data-r="1"><small data-iv="1"></small><b>Hard</b></button>
+      <button class="rate good" data-r="2"><small data-iv="2"></small><b>Good</b></button>
+      <button class="rate easy" data-r="3"><small data-iv="3"></small><b>Easy</b></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= DECK OVERVIEW SHEET ================= -->
+<div id="deckSheet" class="modal-overlay sheet hidden">
+  <div class="modal-card">
+    <div class="sheet-grip"></div>
+    <div class="modal-head"><h3 id="dsName">Deck</h3><button class="icon-btn" data-close="deckSheet"><i class="fas fa-times"></i></button></div>
+    <div class="modal-body">
+      <div class="ds-counts">
+        <div><b id="dsNew" class="c-new">0</b><span>New</span></div>
+        <div><b id="dsLearn" class="c-learn">0</b><span>Learning</span></div>
+        <div><b id="dsDue" class="c-due">0</b><span>To review</span></div>
+      </div>
+      <div id="dsMsg" class="ds-msg"></div>
+      <button id="dsStudy" class="btn-primary full lg"><i class="fas fa-play"></i> Study now</button>
+      <div class="ds-grid">
+        <button data-ds="add"><i class="fas fa-plus"></i> Add card</button>
+        <button data-ds="browse"><i class="fas fa-magnifying-glass"></i> Browse</button>
+        <button data-ds="cram"><i class="fas fa-bolt"></i> Custom study</button>
+        <button data-ds="sub"><i class="fas fa-folder-plus"></i> Add subdeck</button>
+        <button data-ds="import"><i class="fas fa-file-import"></i> Import into</button>
+        <button data-ds="export"><i class="fas fa-file-export"></i> Export</button>
+        <button data-ds="rename"><i class="fas fa-pen"></i> Rename / move</button>
+        <button data-ds="delete" class="danger"><i class="fas fa-trash"></i> Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= CARD DETAIL SHEET (Browse) ================= -->
+<div id="cardSheet" class="modal-overlay sheet hidden">
+  <div class="modal-card">
+    <div class="sheet-grip"></div>
+    <div class="modal-head"><h3>Card</h3><button class="icon-btn" data-close="cardSheet"><i class="fas fa-times"></i></button></div>
+    <div class="modal-body">
+      <div class="cs-preview">
+        <div id="csFront" class="cs-face"></div>
+        <hr>
+        <div id="csBack" class="cs-face"></div>
+      </div>
+      <div id="csInfo" class="cs-info"></div>
+      <div class="ds-grid">
+        <button data-cs="edit"><i class="fas fa-pen"></i> Edit</button>
+        <button data-cs="suspend"><i class="fas fa-pause"></i> <span id="csSuspendLbl">Suspend</span></button>
+        <button data-cs="flag"><i class="fas fa-flag"></i> Flag</button>
+        <button data-cs="move"><i class="fas fa-folder-tree"></i> Move</button>
+        <button data-cs="forget"><i class="fas fa-eraser"></i> Reset progress</button>
+        <button data-cs="delete" class="danger"><i class="fas fa-trash"></i> Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= ADD / EDIT CARD ================= -->
+<div id="cardModal" class="modal-overlay hidden">
+  <div class="modal-card tall">
+    <div class="modal-head"><h3 id="cmTitle">Add card</h3><button class="icon-btn" data-close="cardModal"><i class="fas fa-times"></i></button></div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="cmDeck">Deck</label>
+        <select id="cmDeck" class="select full"></select>
+      </div>
+      <div class="form-group">
+        <div class="label-row"><label for="cmFront">Front</label>
+          <div class="toolbar" data-for="cmFront">
+            <button data-tb="bold" title="Bold"><i class="fas fa-bold"></i></button>
+            <button data-tb="cloze" title="Cloze deletion {{c1::…}}"><i class="fas fa-ellipsis"></i></button>
+            <button data-tb="math" title="Math (LaTeX)"><i class="fas fa-square-root-variable"></i></button>
+            <button data-tb="image" title="Add image"><i class="fas fa-image"></i></button>
+          </div>
+        </div>
+        <textarea id="cmFront" class="textarea" rows="3" placeholder="Question — or text with {{c1::cloze}} deletions"></textarea>
+      </div>
+      <div class="form-group">
+        <div class="label-row"><label for="cmBack">Back</label>
+          <div class="toolbar" data-for="cmBack">
+            <button data-tb="bold" title="Bold"><i class="fas fa-bold"></i></button>
+            <button data-tb="math" title="Math (LaTeX)"><i class="fas fa-square-root-variable"></i></button>
+            <button data-tb="image" title="Add image"><i class="fas fa-image"></i></button>
+          </div>
+        </div>
+        <textarea id="cmBack" class="textarea" rows="4" placeholder="Answer (optional extra info for cloze cards)"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="cmTags">Tags <span class="muted small">(comma-separated)</span></label>
+        <input id="cmTags" class="input full" type="text" placeholder="cardiology, exam1">
+      </div>
+      <label id="cmReverseRow" class="check"><input id="cmReverse" type="checkbox"> Also create a reversed card (back → front)</label>
+      <p class="muted small hint">Tip: paste an image straight into a field, or tap <i class="fas fa-image"></i>. Math goes between <code>\( … \)</code>.</p>
+    </div>
+    <div class="modal-foot">
+      <button id="cmDelete" class="btn-danger hidden"><i class="fas fa-trash"></i></button>
+      <div class="spacer"></div>
+      <button id="cmSaveNew" class="btn-secondary">Add &amp; next</button>
+      <button id="cmSave" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= CUSTOM STUDY ================= -->
+<div id="cramModal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3><i class="fas fa-bolt"></i> Custom study</h3><button class="icon-btn" data-close="cramModal"><i class="fas fa-times"></i></button></div>
+    <div class="modal-body">
+      <p class="muted small">Cram mode never changes your real schedule — it only shuffles cards for extra practice. (Answers still count toward your daily activity.)</p>
+      <div class="form-group">
+        <label for="crMode">Which cards?</label>
+        <select id="crMode" class="select full">
+          <option value="all">Everything in the deck (shuffled)</option>
+          <option value="weak">Weak cards (lapsed or low ease)</option>
+          <option value="forgot">Forgotten recently (pressed Again)</option>
+          <option value="ahead">Due soon (study ahead)</option>
+          <option value="unseen">Unseen cards (beyond daily limit)</option>
+          <option value="tag">By tag</option>
+        </select>
+      </div>
+      <div id="crDaysRow" class="form-group hidden"><label for="crDays">Days ahead / days back</label><input id="crDays" class="input full" type="number" min="1" value="7"></div>
+      <div id="crTagRow" class="form-group hidden"><label for="crTag">Tag</label><input id="crTag" class="input full" type="text" placeholder="e.g. cardiology"></div>
+      <div class="form-group"><label for="crCount">Maximum cards</label><input id="crCount" class="input full" type="number" min="1" value="50"></div>
+    </div>
+    <div class="modal-foot"><div class="spacer"></div><button id="crStart" class="btn-primary"><i class="fas fa-play"></i> Start</button></div>
+  </div>
+</div>
+
+<!-- ================= GENERIC ASK DIALOG ================= -->
+<div id="askModal" class="modal-overlay hidden">
+  <div class="modal-card small">
+    <div class="modal-head"><h3 id="askTitle">Title</h3></div>
+    <div class="modal-body">
+      <p id="askNote" class="muted small hidden"></p>
+      <input id="askInput" class="input full" type="text" autocomplete="off">
+      <select id="askSelect" class="select full hidden"></select>
+    </div>
+    <div class="modal-foot"><div class="spacer"></div><button id="askCancel" class="btn-secondary">Cancel</button><button id="askOk" class="btn-primary">OK</button></div>
+  </div>
+</div>
+
+<input type="file" id="impFile" accept=".csv,.txt,.tsv,text/plain,text/csv" class="hidden">
+<input type="file" id="restoreFile" accept=".json,application/json" class="hidden">
+<input type="file" id="imageFile" accept="image/*" class="hidden">
+
+<script src="script.js"></script>
+</body>
+</html>
